@@ -70,13 +70,19 @@ case 33:{*argumentCount=3;return device->GetFrontBufferData(static_cast<UINT>(ar
 case 34:{*argumentCount=6;
     static auto s_rs_stretch = reinterpret_cast<void(*)(uint32_t,uint32_t)>(dlsym(RTLD_DEFAULT,"nfs_rain_splatter_notify_stretch_rect"));
     if(s_rs_stretch) s_rs_stretch(args[1], args[3]);
-    return device->StretchRect(nativeObject<IDirect3DSurface9>(args[1]),static_cast<const RECT*>(pointer(args[2])),nativeObject<IDirect3DSurface9>(args[3]),static_cast<const RECT*>(pointer(args[4])),static_cast<D3DTEXTUREFILTERTYPE>(args[5]));}
+    captureActiveTarget(device,guestCallerFunction);
+    HRESULT status=device->StretchRect(nativeObject<IDirect3DSurface9>(args[1]),static_cast<const RECT*>(pointer(args[2])),nativeObject<IDirect3DSurface9>(args[3]),static_cast<const RECT*>(pointer(args[4])),static_cast<D3DTEXTUREFILTERTYPE>(args[5]));
+    recordRenderMethod(D3D9RenderStat::StretchRect,guestCallerFunction,status);
+    return status;}
 case 35:{*argumentCount=4;return device->ColorFill(nativeObject<IDirect3DSurface9>(args[1]),static_cast<const RECT*>(pointer(args[2])),static_cast<D3DCOLOR>(args[3]));}
-case 36:{*argumentCount=7;IDirect3DSurface9* object5=nullptr;if(args[6])throw std::runtime_error("D3D9 shared resource handles pending");HRESULT status=device->CreateOffscreenPlainSurface(static_cast<UINT>(args[1]),static_cast<UINT>(args[2]),static_cast<D3DFORMAT>(args[3]),static_cast<D3DPOOL>(args[4]),args[5]?&object5:nullptr,nullptr);if(args[5])write(args[5],SUCCEEDED(status)?wrap(object5,Kind::Surface):0);return status;}
+case 36:{*argumentCount=7;IDirect3DSurface9* object7=nullptr;if(args[6])throw std::runtime_error("D3D9 shared resource handles pending");HRESULT status=device->CreateOffscreenPlainSurface(static_cast<UINT>(args[1]),static_cast<UINT>(args[2]),static_cast<D3DFORMAT>(args[3]),static_cast<D3DPOOL>(args[4]),args[5]?&object7:nullptr,nullptr);if(args[5])write(args[5],SUCCEEDED(status)?wrap(object7,Kind::Surface):0);return status;}
 case 37:{*argumentCount=3;
     static auto s_rs_rt = reinterpret_cast<void(*)(uint32_t)>(dlsym(RTLD_DEFAULT,"nfs_rain_splatter_notify_render_target"));
     if(s_rs_rt) s_rs_rt(args[2]);
-    return device->SetRenderTarget(static_cast<DWORD>(args[1]),nativeObject<IDirect3DSurface9>(args[2]));}
+    HRESULT status=device->SetRenderTarget(static_cast<DWORD>(args[1]),nativeObject<IDirect3DSurface9>(args[2]));
+    recordRenderMethod(D3D9RenderStat::SetRenderTarget,guestCallerFunction,status);
+    if(SUCCEEDED(status)&&args[1]==0)captureActiveTarget(device,guestCallerFunction,true);
+    return status;}
 case 38:{*argumentCount=3;IDirect3DSurface9* object2=nullptr;HRESULT status=device->GetRenderTarget(static_cast<DWORD>(args[1]),args[2]?&object2:nullptr);if(args[2])write(args[2],SUCCEEDED(status)?wrap(object2,Kind::Surface):0);return status;}
 case 39:{*argumentCount=2;
     static auto s_rs_rt = reinterpret_cast<void(*)(uint32_t)>(dlsym(RTLD_DEFAULT,"nfs_rain_splatter_notify_render_target"));
@@ -90,10 +96,22 @@ case 41:{*argumentCount=1;
     static int(*s_contrast_pre)(void*) = nullptr;
     if(!s_contrast_pre) s_contrast_pre = reinterpret_cast<int(*)(void*)>(resolveGraphicsCacheSymbol("nfs_contrast_regulator_pre_frame"));
     if(s_contrast_pre) s_contrast_pre(guestBase);
-    return device->BeginScene();}
+    captureActiveTarget(device,guestCallerFunction);
+    HRESULT status=device->BeginScene();
+    recordRenderMethod(D3D9RenderStat::BeginScene,guestCallerFunction,status);
+    if(renderTraceOrdinal)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","D3D9 render trace call=%u caller_func=%08x method=41 name=BeginScene path=forwarded hr=%08x",renderTraceOrdinal,guestCallerFunction,uint32_t(status));
+    return status;}
 case 42:{*argumentCount=1;
-    return device->EndScene();}
-case 43:{*argumentCount=7;return device->Clear(static_cast<DWORD>(args[1]),static_cast<const D3DRECT*>(pointer(args[2])),static_cast<DWORD>(args[3]),static_cast<D3DCOLOR>(args[4]),floatValue(args[5]),static_cast<DWORD>(args[6]));}
+    HRESULT status=device->EndScene();
+    recordRenderMethod(D3D9RenderStat::EndScene,guestCallerFunction,status);
+    if(renderTraceOrdinal)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","D3D9 render trace call=%u caller_func=%08x method=42 name=EndScene path=forwarded hr=%08x",renderTraceOrdinal,guestCallerFunction,uint32_t(status));
+    return status;}
+case 43:{*argumentCount=7;
+    captureActiveTarget(device,guestCallerFunction);
+    HRESULT status=device->Clear(static_cast<DWORD>(args[1]),static_cast<const D3DRECT*>(pointer(args[2])),static_cast<DWORD>(args[3]),static_cast<D3DCOLOR>(args[4]),floatValue(args[5]),static_cast<DWORD>(args[6]));
+    recordRenderMethod(D3D9RenderStat::Clear,guestCallerFunction,status);
+    if(renderTraceOrdinal)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","D3D9 render trace call=%u caller_func=%08x method=43 name=Clear path=forwarded hr=%08x",renderTraceOrdinal,guestCallerFunction,uint32_t(status));
+    return status;}
 case 44:{*argumentCount=3;
     static int(*s_filter_tf)(uint32_t,const float*) = nullptr;
     if(!s_filter_tf) s_filter_tf = reinterpret_cast<int(*)(uint32_t,const float*)>(resolveGraphicsCacheSymbol("nfs_d3d9_filter_transform"));
@@ -198,13 +216,27 @@ case 81:{*argumentCount=4;
 case 82:{*argumentCount=7;
     static int(*s_cull_test)() = nullptr;
     if(!s_cull_test) s_cull_test = reinterpret_cast<int(*)()>(resolveGraphicsCacheSymbol("nfs_camera_cull_test_draw"));
-    if (s_cull_test && s_cull_test()) return D3D_OK;
-    return device->DrawIndexedPrimitive(static_cast<D3DPRIMITIVETYPE>(args[1]),static_cast<INT>(args[2]),static_cast<UINT>(args[3]),static_cast<UINT>(args[4]),static_cast<UINT>(args[5]),static_cast<UINT>(args[6]));}
+    captureActiveTarget(device,guestCallerFunction);
+    const bool culled=s_cull_test&&s_cull_test();
+    if(culled){
+        recordRenderMethod(D3D9RenderStat::DrawIndexedPrimitive,guestCallerFunction,D3D_OK,true);
+        if(renderTraceOrdinal)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","D3D9 render trace call=%u caller_func=%08x method=82 name=DrawIndexedPrimitive path=culled hr=%08x",renderTraceOrdinal,guestCallerFunction,uint32_t(D3D_OK));
+        return D3D_OK;
+    }
+    HRESULT status=device->DrawIndexedPrimitive(static_cast<D3DPRIMITIVETYPE>(args[1]),static_cast<INT>(args[2]),static_cast<UINT>(args[3]),static_cast<UINT>(args[4]),static_cast<UINT>(args[5]),static_cast<UINT>(args[6]));
+    recordRenderMethod(D3D9RenderStat::DrawIndexedPrimitive,guestCallerFunction,status);
+    if(renderTraceOrdinal)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","D3D9 render trace call=%u caller_func=%08x method=82 name=DrawIndexedPrimitive path=forwarded hr=%08x",renderTraceOrdinal,guestCallerFunction,uint32_t(status));
+    return status;}
 case 83:{*argumentCount=5;
+    beginRenderAttempt(D3D9RenderStat::DrawPrimitiveUP,guestCallerFunction);
+    captureFirstHelperUP(device,guestCallerFunction,args[1],args[2],args[3],args[4]);
     static int(*s_cull_test)() = nullptr;
     if(!s_cull_test) s_cull_test = reinterpret_cast<int(*)()>(resolveGraphicsCacheSymbol("nfs_camera_cull_test_draw"));
-    if (s_cull_test && s_cull_test()) return D3D_OK;
-    return device->DrawPrimitiveUP(static_cast<D3DPRIMITIVETYPE>(args[1]),static_cast<UINT>(args[2]),static_cast<const void*>(pointer(args[3])),static_cast<UINT>(args[4]));}
+    const bool culled=s_cull_test&&s_cull_test();
+    if(culled){finishRenderAttempt(D3D9RenderStat::DrawPrimitiveUP,D3D_OK,true);return D3D_OK;}
+    HRESULT status=device->DrawPrimitiveUP(static_cast<D3DPRIMITIVETYPE>(args[1]),static_cast<UINT>(args[2]),static_cast<const void*>(pointer(args[3])),static_cast<UINT>(args[4]));
+    finishRenderAttempt(D3D9RenderStat::DrawPrimitiveUP,status,false);
+    return status;}
 case 84:{*argumentCount=9;
     static int(*s_cull_test)() = nullptr;
     if(!s_cull_test) s_cull_test = reinterpret_cast<int(*)()>(resolveGraphicsCacheSymbol("nfs_camera_cull_test_draw"));

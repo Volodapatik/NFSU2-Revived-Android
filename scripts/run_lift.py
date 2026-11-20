@@ -32,6 +32,44 @@ import disasm32                                     # noqa: E402
 from disasm32 import Disassembler, Function, BasicBlock, Instruction  # noqa: E402
 
 
+def _va(value):
+    return int(value, 0) if isinstance(value, str) else int(value)
+
+
+def restore_manual_seed(dis, funcs, iat, entry):
+    """Restore a trusted build-specific entry after heuristic overlap filtering."""
+    if not isinstance(entry, dict):
+        entry = {"address": entry}
+    address = _va(entry["address"])
+    func = dis.disassemble_function(address, iat)
+    if func is None:
+        raise RuntimeError(f"manual function seed 0x{address:08X} did not decode")
+    end = entry.get("end")
+    if end is not None:
+        end = _va(end)
+        if end <= address:
+            raise ValueError(f"invalid end for manual seed 0x{address:08X}")
+        blocks = {}
+        for start, block in sorted(func.blocks.items()):
+            if not address <= start < end:
+                continue
+            block.instructions = [i for i in block.instructions if address <= i.address < end]
+            if not block.instructions:
+                continue
+            block.successors = [s for s in block.successors if address <= s < end]
+            block.end = min(block.end, end)
+            blocks[start] = block
+        if address not in blocks:
+            raise RuntimeError(f"manual function seed 0x{address:08X} has no entry block")
+        func.blocks = blocks
+        func.end = end
+        func.size = end - address
+        func.jump_targets = {t for t in func.jump_targets if address <= t < end}
+    func.entry_kind = entry.get("entry_kind", "start")
+    funcs[address] = func
+    return func
+
+
 def cmd_catalog(exe, seeds_path, out):
     info = analyze_pe(exe)
     iat = build_iat_map(info)
@@ -40,10 +78,22 @@ def cmd_catalog(exe, seeds_path, out):
     for e in json.load(open(seeds_path)):
         a = e.get("address") if isinstance(e, dict) else e
         seeds.add(int(a, 0) if isinstance(a, str) else a)
+    manual_seeds = []
+    build = os.environ.get("NFSU2_EXE_BUILD", "")
+    extra_seeds = os.path.join(HERE, "..", "config", f"recovery-seeds-{build}.json")
+    if build and os.path.exists(extra_seeds):
+        manual_seeds = json.load(open(extra_seeds))
+        for e in manual_seeds:
+            a = e.get("address") if isinstance(e, dict) else e
+            seeds.add(_va(a))
     dis = Disassembler(data, info.image_base, info.sections)
     t = time.time()
     funcs = dis.find_functions(info.code_start, info.code_end, iat, seeds=seeds,
                                release_operands=True)
+    # These build-specific entries have independent evidence and may begin
+    # inside a misleading decode; re-decode them after the heuristic filter.
+    for entry in manual_seeds:
+        restore_manual_seed(dis, funcs, iat, entry)
     print(f"[*] {len(funcs)} functions in {time.time() - t:.0f}s")
     doc = {"exe": os.path.basename(exe), "image_base": info.image_base,
            "code_start": info.code_start, "code_end": info.code_end,
@@ -105,11 +155,14 @@ def cmd_lift(exe, catalog, outdir, split=400, names_path=None, prefix=""):
     if names_path and os.path.exists(names_path):
         names = {int(k, 16): v for k, v in json.load(open(names_path)).items()}
     cfg = os.path.join(HERE, "..", "config")
-    overrides = read_va_list(os.path.join(cfg, "overrides.txt"))
+    build = os.environ.get("NFSU2_EXE_BUILD", "")
+    override_path = os.path.join(cfg, f"overrides-{build}.txt" if build else "overrides.txt")
+    if not os.path.exists(override_path):
+        override_path = os.path.join(cfg, "overrides.txt")
+    overrides = read_va_list(override_path)
     excluded = read_va_list(os.path.join(cfg, "exclude.txt"))
     # Each SPEED2.EXE build has its own hook sites (config/hooks-<build>.txt);
     # NFSU2_EXE_BUILD selects one, the documented build uses hooks.txt.
-    build = os.environ.get("NFSU2_EXE_BUILD", "")
     hooks = read_va_list(os.path.join(cfg, f"hooks-{build}.txt" if build else "hooks.txt"))
     md = Cs(CS_ARCH_X86, CS_MODE_32)
     md.detail = True
@@ -197,6 +250,10 @@ def cmd_lift(exe, catalog, outdir, split=400, names_path=None, prefix=""):
         for slot, (dll, nm) in sorted(iat.items()):
             fh.write(f'    {{ 0x{slot:08X}u, "{dll}!{nm}" }},\n')
         fh.write("    { 0, 0 } };\n")
+
+    if not prefix:
+        from apply_beta24_state_trace import instrument_tree
+        instrument_tree(outdir)
 
     out = {"functions": len(entries), "files": idx, "c_lines": lines_total,
            "lift_failures": len(failed), "failures": failed[:200],

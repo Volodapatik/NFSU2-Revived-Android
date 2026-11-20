@@ -358,6 +358,12 @@ public final class GameOptions {
             return selected;
         }
 
+        // A selected custom Vulkan ICD (for example PanVK) can expose a newer API
+        // than the system driver, so Auto must honor it before applying SoC rules.
+        try {
+            if (GpuDrivers.selected(context) != null) return "vulkan";
+        } catch (Throwable ignored) {}
+
         String jsonStr = loadGraphicsApiJson(context);
         if (jsonStr != null && !jsonStr.trim().isEmpty()) {
             try {
@@ -576,7 +582,7 @@ public final class GameOptions {
             else if ("200".equals(menuSize)) feScale = "2.00";
 
             String aspect = "Auto";
-            String skipIntro = "0";
+            String skipIntro = "1";
             String cutsceneBorders = "0";
 
             java.util.List<String> lines = new java.util.ArrayList<>();

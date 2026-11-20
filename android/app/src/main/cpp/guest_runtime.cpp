@@ -7,6 +7,7 @@
 #include "guest_memory.h"
 #include "guest_heap.h"
 #include "runtime_log.h"
+#include "util_error.h"
 #include "frame_pacer.h"
 #include "graphics_cache.h"
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
@@ -209,7 +210,7 @@ void yieldGuestMachine(unsigned milliseconds=0,std::chrono::steady_clock::time_p
 thread_local bool renderThread=false;
 // Render-thread slice handovers and the time spent getting the machine back.
 uint64_t renderYields=0;std::chrono::nanoseconds renderWait{};
-void checkGuestProgress() {
+void checkGuestProgressImpl() {
     while(guestPaused.load()&&!stopRequested.load())yieldGuestMachine(1);
     if(stopRequested.load())throw GuestStop("Guest execution cancelled");
     // Imports and lifted back edges can reach this hook many times per frame.
@@ -243,9 +244,9 @@ constexpr uint32_t stackBase = 0x20000000u, stackSize = 16u << 20, tib = 0x21000
 void* ptr(uint32_t va, uint64_t bytes) { return memory->address(va, bytes); }
 uint32_t read32(uint32_t va) { uint32_t v; std::memcpy(&v, ptr(va,4),4); return v; }
 void write32(uint32_t va, uint32_t v) { std::memcpy(ptr(va,4),&v,4); }
-inline uint16_t read16(uint32_t va) { uint16_t v; std::memcpy(&v, ptr(va,2),2); return v; }
+inline uint16_t __attribute__((unused)) read16(uint32_t va) { uint16_t v; std::memcpy(&v, ptr(va,2),2); return v; }
 inline void write16(uint32_t va, uint16_t v) { std::memcpy(ptr(va,2),&v,2); }
-inline uint8_t read8(uint32_t va) { uint8_t v; std::memcpy(&v, ptr(va,1),1); return v; }
+inline uint8_t __attribute__((unused)) read8(uint32_t va) { uint8_t v; std::memcpy(&v, ptr(va,1),1); return v; }
 inline void write8(uint32_t va, uint8_t v) { std::memcpy(ptr(va,1),&v,1); }
 uint32_t arg(uint32_t index) { return read32(g_esp + 4 + index*4); }
 void ret(uint32_t value, uint32_t argc) { g_eax=value; g_esp+=4+argc*4; }
@@ -323,8 +324,12 @@ void d3dDispatch(){
     // two clock reads on each of the ~40k calls in a race frame.
     bool timed=(++bridgeCalls&63u)==0||token==0x7e002110u;
     std::chrono::steady_clock::time_point bridgeStart;if(timed)bridgeStart=std::chrono::steady_clock::now();uint32_t result;
-    try{result=dispatchGuestD3D9(token,args,&count);}catch(...){
+    try{result=dispatchGuestD3D9(token,args,&count,g_cur_func);}catch(...){
         NFS_RUNTIME_LOG(ANDROID_LOG_ERROR,"NFSU2","D3D9 guest caller=%08x stack=%08x token=%08x self=%08x",g_cur_func,g_esp,token,args[0]);throw;}
+    if(token==0x7e002110u){
+        static unsigned presentResultLogs=0;
+        if(presentResultLogs<8){++presentResultLogs;NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","Guest D3D9 Present #%u returned HRESULT=%08x",presentResultLogs,result);}
+    }
     // Per method (kind*256+method), to name the calls that block the frame.
     static std::array<std::chrono::nanoseconds,4096> methodTime{};
     if(timed){auto spent=std::chrono::steady_clock::now()-bridgeStart;bridgeTime+=token==0x7e002110u?spent:spent*64;presentTime+=token==0x7e002110u?spent:std::chrono::nanoseconds{};
@@ -446,8 +451,6 @@ inline void syncPreTimestepPacing() {
 #include "guest_win32_tapi.inc"
 #include "guest_win32_gdi.inc"
 #include "guest_extra_options.inc"
-
-void notifyHaltToHost(const char* message);
 
 static void writeNativeHaltLog(const std::string& dump) {
     const char* targets[] = {
@@ -654,10 +657,23 @@ void loadImage(const char* path) {
     auto nt=fileStruct<pe_nt_headers32>(file,dos.e_lfanew);
     if (nt.Signature!=0x4550 || nt.FileHeader.Machine!=0x14c || nt.OptionalHeader.Magic!=0x10b ||
         nt.FileHeader.SizeOfOptionalHeader<sizeof(pe_opt_header32)) throw GuestStop("Expected x86 PE32");
-    auto opt=nt.OptionalHeader; imageBase=opt.ImageBase; imageSize=opt.SizeOfImage;
+    auto opt=nt.OptionalHeader; imageBase=opt.ImageBase;
+    const uint32_t declaredImageSize=opt.SizeOfImage; imageSize=declaredImageSize;
     resourceRva=opt.DataDirectory[2].VirtualAddress;resourceSize=opt.DataDirectory[2].Size;
-    if (imageBase!=0x400000 || imageSize!=0x532000 || opt.AddressOfEntryPoint!=0x35bcc7)
+#if defined(NFSU2_EXE_F3C1C14F)
+    constexpr uint32_t expectedImageSize=0x52fc08u, expectedEntryPoint=0x35bc01u;
+#else
+    constexpr uint32_t expectedImageSize=0x532000u, expectedEntryPoint=0x35bcc7u;
+#endif
+    if (imageBase!=0x400000 || declaredImageSize!=expectedImageSize || opt.AddressOfEntryPoint!=expectedEntryPoint)
         throw GuestStop("PE layout does not match generated NFSU2 code");
+    const uint32_t sectionAlignment=opt.SectionAlignment;
+    if(!sectionAlignment||(sectionAlignment&(sectionAlignment-1u)))throw GuestStop("Invalid PE section alignment");
+    const uint64_t mappedImageSize=(uint64_t(declaredImageSize)+sectionAlignment-1u)/sectionAlignment*sectionAlignment;
+    if(mappedImageSize>UINT32_MAX)throw GuestStop("PE mapped image size overflow");
+    imageSize=static_cast<uint32_t>(mappedImageSize);
+    if(imageSize!=declaredImageSize)
+        NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","Rounding PE SizeOfImage for section mapping: declared=%08x mapped=%08x",declaredImageSize,imageSize);
     memory->commit(imageBase,imageSize);
     imageRange(0,opt.SizeOfHeaders);
     if (opt.SizeOfHeaders>file.size()) throw GuestStop("Truncated PE headers");
@@ -681,19 +697,29 @@ void loadImage(const char* path) {
             uint32_t addr=0x007fa9d4u+i*4u;
             if(read32(addr)<48000)write32(addr,48000);
         }
+#if !defined(NFSU2_EXE_F3C1C14F)
         if(memory->readable(0x0061c744u,1)&&*static_cast<const uint8_t*>(ptr(0x0061c744u,1))==0x16){
             *static_cast<uint8_t*>(ptr(0x0061c744u,1))=0x7f;
         }
+#endif
         if(memory->writable(0x007f6de8u,8)&&read32(0x007f6de8u)==0x5b9d88b9u){
             if(read32(0x007f6decu)<524288u) write32(0x007f6decu,524288u);
         }
-        NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","Patched guest CarPool memory (48MB, ride slots 127, lang pool headroom 512KB)");
+        NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","Patched guest CarPool memory (48MB, lang pool headroom 512KB)");
     }
 }
 uint32_t callGuest(uint32_t va, const uint32_t* args, size_t count, uint32_t cleanup, bool threadStart) {
     State saved; saved.save();
     try {
-        recomp_func_t fn=recomp_lookup_manual(va);if(!fn)fn=recomp_lookup(va);
+        recomp_func_t fn=nullptr;
+        // Test callbacks intentionally override their synthetic addresses. For
+        // ordinary guest calls, prefer an override or statically lifted function
+        // before inspecting bytes for a dynamic callback signature: real x86
+        // functions can share that short prologue by coincidence.
+        if((timerTestActive&&va==timerTestAddress)||(generatedTestActive&&va==generatedTestTarget))
+            fn=recomp_lookup_manual(va);
+        if(!fn)fn=recomp_lookup(va);
+        if(!fn)fn=recomp_lookup_manual(va);
         if (!fn) fn=recomp_lookup_import(va);
         if (!fn) throw GuestStop("No guest function at " + hex(va));
         for (size_t i=count;i--;) { g_esp-=4; write32(g_esp,args[i]); }
@@ -898,8 +924,65 @@ void testGeneratedCallbacks(){
     }catch(...){generatedTestActive=false;heaps->free(GuestHeaps::process,code);heaps->free(GuestHeaps::process,data);throw;}
     generatedTestActive=false;heaps->free(GuestHeaps::process,code);heaps->free(GuestHeaps::process,data);
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","Generated callbacks passed 300 calls, long context reload, signed clamps, 32-bit multiply/add/subtract, stack cleanup and guards");
-}
+    }
 } // namespace
+
+extern "C" void nfsGuestAudioGetDebugStats(int32_t* streamActive,int32_t* xruns,int32_t* bufferFrames,
+        int32_t* capacityFrames,int32_t* burstFrames,uint32_t* sampleRate,uint32_t* callbackPeakUs,
+        uint32_t* callbackAgeUs,uint32_t* maxCallbackAgeUs,uint32_t* producerGapUs,uint32_t* ringUs,uint32_t* stallCount){
+#ifdef __ANDROID__
+    if(streamActive)*streamActive=audioDiagStreamActive.load(std::memory_order_relaxed);
+    if(xruns)*xruns=audioDiagXruns.load(std::memory_order_relaxed);
+    if(bufferFrames)*bufferFrames=audioDiagBufferFrames.load(std::memory_order_relaxed);
+    if(capacityFrames)*capacityFrames=audioDiagCapacityFrames.load(std::memory_order_relaxed);
+    if(burstFrames)*burstFrames=audioDiagBurstFrames.load(std::memory_order_relaxed);
+    if(sampleRate)*sampleRate=audioDiagSampleRate.load(std::memory_order_relaxed);
+    if(callbackPeakUs)*callbackPeakUs=audioDiagCallbackPeakUs.load(std::memory_order_relaxed);
+    if(callbackAgeUs)*callbackAgeUs=audioDiagCallbackAgeUs.load(std::memory_order_relaxed);
+    if(maxCallbackAgeUs)*maxCallbackAgeUs=audioDiagMaxCallbackAgeUs.load(std::memory_order_relaxed);
+    if(producerGapUs)*producerGapUs=audioDiagProducerGapUs.load(std::memory_order_relaxed);
+    if(ringUs)*ringUs=audioDiagRingUs.load(std::memory_order_relaxed);
+    if(stallCount)*stallCount=audioDiagStallCount.load(std::memory_order_relaxed);
+#else
+    if(streamActive)*streamActive=0;
+    if(xruns)*xruns=-1;
+    if(bufferFrames)*bufferFrames=-1;
+    if(capacityFrames)*capacityFrames=-1;
+    if(burstFrames)*burstFrames=-1;
+    if(sampleRate)*sampleRate=0;
+    if(callbackPeakUs)*callbackPeakUs=0;
+    if(callbackAgeUs)*callbackAgeUs=0;
+    if(maxCallbackAgeUs)*maxCallbackAgeUs=0;
+    if(producerGapUs)*producerGapUs=0;
+    if(ringUs)*ringUs=0;
+    if(stallCount)*stallCount=0;
+#endif
+}
+
+extern "C" uint32_t recomp_guest_skip_this_name(void) {
+    static std::mutex guard;
+    static uint32_t guestAddress = 0;
+    std::lock_guard<std::mutex> lock(guard);
+    if (guestAddress) return guestAddress;
+    if (!memory || !heaps) {
+        NFS_RUNTIME_LOG(ANDROID_LOG_ERROR,"NFSU2","SkipIntro shim requested before guest memory was ready");
+        return 0;
+    }
+    uint32_t address = 0;
+    try {
+        address = heaps->alloc(GuestHeaps::process, 8, 9);
+        if (address) std::memcpy(memory->address(address, 9), "SkipThis", 9);
+    } catch (...) {
+        address = 0;
+    }
+    if (!address) {
+        NFS_RUNTIME_LOG(ANDROID_LOG_ERROR,"NFSU2","SkipIntro shim could not allocate guest string");
+        return 0;
+    }
+    guestAddress = address;
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","Android SkipIntro guest key initialized at %08x", guestAddress);
+    return guestAddress;
+}
 
 #ifdef NFS_SERVER_DLL
 extern "C" const recomp_dispatch_entry_t server_recomp_dispatch_table[];
@@ -938,6 +1021,7 @@ struct DispatchHash {
     }
 };
 }
+void checkGuestProgress() { checkGuestProgressImpl(); }
 extern "C" int guest_is_readable(uint32_t va, uint32_t bytes) {
     if (!memory) return 0;
     return memory->readable(va, bytes) ? 1 : 0;
@@ -954,10 +1038,37 @@ extern "C" recomp_func_t recomp_lookup(uint32_t va) {
 extern "C" recomp_func_t recomp_lookup_manual(uint32_t va) {
     if(timerTestActive&&va==timerTestAddress)return timerTestCallback;
     if(generatedTestActive&&va==generatedTestTarget)return generatedTestCallback;
+    if(auto fn=recomp_lookup(va))return fn;
+    auto lookupSorted=[va](const recomp_dispatch_entry_t* table,uint32_t count)->recomp_func_t{
+        uint32_t lo=0,hi=count;
+        while(lo<hi){uint32_t mid=lo+(hi-lo)/2;if(table[mid].address<va)lo=mid+1;else hi=mid;}
+        return lo<count&&table[lo].address==va?table[lo].func:nullptr;
+    };
+    if(auto fn=lookupSorted(recomp_dispatch_table,recomp_dispatch_count)){
+        static std::atomic<uint32_t> recovered{0};
+        if(recovered.fetch_add(1,std::memory_order_relaxed)<4)
+            NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU2","Dispatch hash miss recovered from sorted table at %08x",va);
+        return fn;
+    }
+#ifdef NFS_SERVER_DLL
+    if(auto fn=lookupSorted(server_recomp_dispatch_table,server_recomp_dispatch_count))return fn;
+#endif
     if(memory&&memory->readable(va,5)&&read32(va)==0x24748b56u&&*static_cast<const uint8_t*>(ptr(va+4,1))==8){
         dynamicThunkAddress=va;return dynamicThunk;
     }
-    return nfs_override_lookup(va);
+    return nullptr;
+}
+void testStaticCallbackDispatch(){
+    constexpr uint32_t target=0x00434940u;
+    if(!memory||!memory->readable(target,5)||read32(target)!=0x24748b56u||*static_cast<const uint8_t*>(ptr(target+4,1))!=8)
+        throw GuestStop("Static callback dispatch probe bytes changed at "+hex(target));
+    recomp_func_t fast=recomp_lookup(target),manual=recomp_lookup_manual(target);
+    if(!manual||manual==dynamicThunk||(fast&&manual!=fast))
+        throw GuestStop("Static callback dispatch self-check failed at "+hex(target));
+    constexpr uint32_t v11Destructor=0x004C4E20u;
+    if(!recomp_lookup(v11Destructor))
+        throw GuestStop("Russian v1.1 virtual destructor dispatch missing at "+hex(v11Destructor));
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","Static callback dispatch guard passed at %08x (fast=%s)",target,fast?"hit":"sorted-table recovery");
 }
 extern "C" recomp_func_t recomp_lookup_import(uint32_t va) {
     checkGuestProgress();
@@ -1021,12 +1132,16 @@ void configureAndroidResolutionModes(){
 }
 extern "C" int nfs_android_resolution(){
     uint32_t width=renderWidth.load(),height=renderHeight.load();if(!width||!height)return 0;
-    if(guestActiveResolutionSlot<guestRenderModes.size()){
-        write32(0x870d1c,guestActiveResolutionSlot);
-    }
-    uint32_t index=read32(0x870d1c);if(index>=guestRenderModes.size())index=guestActiveResolutionSlot;
-    if(index<guestRenderModes.size()&&guestRenderModes[index].width&&guestRenderModes[index].height){
-        width=guestRenderModes[index].width;height=guestRenderModes[index].height;
+    uint32_t index=guestActiveResolutionSlot;
+    if(firstGameResolution){
+        firstGameResolution=false;
+    }else{
+        index=read32(0x870d1c);
+        if(index>=guestRenderModes.size())index=guestActiveResolutionSlot;
+        if(index>=guestRenderModes.size())index=0;
+        if(guestRenderModes[index].width&&guestRenderModes[index].height){
+            width=guestRenderModes[index].width;height=guestRenderModes[index].height;
+        }
     }
     if(!memory->writable(arg(0),4)||!memory->writable(arg(1),4))throw GuestStop("Invalid guest resolution outputs");
     write32(arg(0),width);write32(arg(1),height);ret(0,2);nfs_widescreen_set_resolution(width,height);
@@ -1034,14 +1149,18 @@ extern "C" int nfs_android_resolution(){
     return 1;
 }
 
-extern "C" int guest_is_readable(uint32_t va, uint32_t bytes) {
-    return (memory && memory->readable(va, bytes)) ? 1 : 0;
-}
-
 std::string connectGuestRuntime(const char* executable) {
     std::unique_lock<MachineMutex> guard(machine);machineLease=&guard;
     if (memory) return "Guest runtime already initialized";
     State original; original.save();
+    const auto haltAfterError = [&](const std::string& status) -> std::string {
+        joinGuestThreads(guard);machineLease=nullptr;shutdownGuestSound();
+#if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
+        shutdownD3D9Bridge();
+#endif
+        original.load();
+        return status;
+    };
     try {
         stopRequested=false;
         // Interactive Android sessions stop through lifecycle cancellation.
@@ -1085,7 +1204,8 @@ std::string connectGuestRuntime(const char* executable) {
                 }
             }
         }
-        // Expand CarLoadedRideInfoSlotPool capacity at 0x0061c744 from 22 to 127
+        // Expand CarLoadedRideInfoSlotPool capacity in the default build only; this address is code in v1.1.
+#if !defined(NFSU2_EXE_F3C1C14F)
         if (memory->writable(0x0061c744u, 1)) {
             uint8_t* pSlot = static_cast<uint8_t*>(ptr(0x0061c744u, 1));
             if (pSlot && *pSlot == 0x16) {
@@ -1093,6 +1213,7 @@ std::string connectGuestRuntime(const char* executable) {
                 NFS_RUNTIME_LOG(ANDROID_LOG_INFO, "NFSU2", "Patched CarLoadedRideInfoSlotPool capacity at 0x0061c744 to 127");
             }
         }
+#endif
         // Expand EventHandlerSlotPool capacity at 0x005d7b07 from 20 to 128 to prevent overflow
         if (memory->writable(0x005d7b07u, 1)) {
             uint8_t* pSlot = static_cast<uint8_t*>(ptr(0x005d7b07u, 1));
@@ -1130,11 +1251,17 @@ std::string connectGuestRuntime(const char* executable) {
         testGuestFileTime();
         testGuestCriticalSections();
         testGeneratedCallbacks();
+        testStaticCallbackDispatch();
         if(renderWidth.load()&&renderHeight.load()){
+#if defined(NFSU2_EXE_F3C1C14F)
+            constexpr uint32_t resolutionModeFunction=0x005bf560u;
+#else
+            constexpr uint32_t resolutionModeFunction=0x005bf610u;
+#endif
             uint32_t outputs=allocate(12);write32(outputs+8,0xdeadbeef);
-            callGuest(0x005bf610,{outputs,outputs+4});
+            callGuest(resolutionModeFunction,{outputs,outputs+4});
             if(read32(outputs)!=renderWidth.load()||read32(outputs+4)!=renderHeight.load()||read32(outputs+8)!=0xdeadbeef)throw GuestStop("Guest resolution ABI failed");
-            for(uint32_t i=0;i<6;++i){write32(0x870d1c,i);callGuest(0x005bf610,{outputs,outputs+4});
+            for(uint32_t i=0;i<6;++i){write32(0x870d1c,i);callGuest(resolutionModeFunction,{outputs,outputs+4});
                 if(read32(outputs)!=guestRenderModes[i].width||read32(outputs+4)!=guestRenderModes[i].height||read32(outputs+8)!=0xdeadbeef)throw GuestStop("Guest resolution slot/guard check failed");}
             write32(0x870d1c,guestActiveResolutionSlot);firstGameResolution=true;
             heaps->free(GuestHeaps::process,outputs);
@@ -1150,14 +1277,15 @@ std::string connectGuestRuntime(const char* executable) {
 #endif
         original.load();
         return "Guest entry finished: "+std::to_string(result);
+    } catch (const dxvk::DxvkError& e) {
+        NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU2","Guest DXVK error: %s",e.message().c_str());
+        return haltAfterError("Guest boot halted: DXVK error (details in diagnostics)");
     } catch (const std::exception& e) {
         NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU2","Guest integration boundary: %s",e.what());
-        joinGuestThreads(guard);machineLease=nullptr;shutdownGuestSound();
-#if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
-        shutdownD3D9Bridge();
-#endif
-        original.load();
-        return std::string("Guest boot halted: ")+e.what();
+        return haltAfterError(std::string("Guest boot halted: ")+e.what());
+    } catch (...) {
+        NFS_RUNTIME_LOG(ANDROID_LOG_ERROR,"NFSU2","Guest integration boundary: non-standard exception");
+        return haltAfterError("Guest boot halted: non-standard native exception");
     }
 }
 void requestGuestRuntimeStop() {stopRequested=true;}
@@ -1222,8 +1350,9 @@ void setGuestPointerMiddle(float x,float y,int phase,float dx,float dy){
     {
         std::lock_guard<std::mutex> lock(inputMutex);
         inputMouseButtons[2]=(phase!=2)?0x80:0;
-        int32_t mx=int32_t(dx*(renderWidth?renderWidth:640));
-        int32_t my=int32_t(dy*(renderHeight?renderHeight:480));
+        const uint32_t width=renderWidth.load(),height=renderHeight.load();
+        int32_t mx=int32_t(dx*(width?width:640u));
+        int32_t my=int32_t(dy*(height?height:480u));
         inputMouseX+=mx;
         inputMouseY+=my;
     }

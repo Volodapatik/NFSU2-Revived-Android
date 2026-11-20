@@ -25,6 +25,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * On-screen touch controls matching the web port (nfsu2-web):
@@ -38,6 +39,10 @@ final class RacingControlsView extends View {
     interface Keys { void set(int scan, boolean down); }
     /** Touches outside every control drive the game's mouse: x/y as fractions of the view, phase 0 down, 1 move, 2 up. */
     interface Pointer { void touch(float x, float y, int phase); }
+    private static final AtomicInteger debugTouchKeyDowns = new AtomicInteger(0);
+    private static final AtomicInteger debugLastTouchScan = new AtomicInteger(-1);
+    static int debugTouchKeyDowns() { return debugTouchKeyDowns.get(); }
+    static int debugLastTouchScan() { return debugLastTouchScan.get(); }
 
     // Special controls that do not map to a DirectInput scan code
     private static final int MODE = -1, TEXT = -2, STICK = -3, EDIT = -5, CHAT = -6;
@@ -1388,6 +1393,8 @@ final class RacingControlsView extends View {
     private void hold(Control c) {
         if (c == null || ++c.held != 1) return;
         if (c.scan >= 0) {
+            debugTouchKeyDowns.incrementAndGet();
+            debugLastTouchScan.set(c.scan);
             keys.set(c.scan, true);
             // Drift mode (0x2d / X) toggle in free roam
             if (c.scan == 0x2d) {
@@ -1709,6 +1716,8 @@ final class RacingControlsView extends View {
         if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
             Control c = hit(e.getX(index), e.getY(index));
             if (c != null && c.scan == STICK && c.held > 0) c = null;
+            android.util.Log.i("NFSU2.Touch", c == null ? "touch-down outside controls" :
+                    "touch-down control=" + c.icon + " scan=" + c.scan);
             if (c == null && hit(e.getX(index), e.getY(index)) == null) {
                 if (!racing && pointerId < 0) {
                     pointerId = id;
@@ -1735,6 +1744,7 @@ final class RacingControlsView extends View {
                     float dy = (e.getY(i) - cameraStartY) / (getHeight() * 0.20f);
                     dx = Math.max(-1.0f, Math.min(1.0f, dx));
                     dy = Math.max(-1.0f, Math.min(1.0f, dy));
+                    GameActivity.nativeTouchCamera(dx, dy);
                     AdhocRoamClient.handleRightStick(dx, dy);
                     continue;
                 }
@@ -1768,6 +1778,7 @@ final class RacingControlsView extends View {
             }
             if (racing && id == cameraTouchId) {
                 cameraTouchId = -1;
+                GameActivity.nativeTouchCamera(0f, 0f);
                 AdhocRoamClient.handleRightStick(0f, 0f);
             }
             Control c = removeFinger(id);

@@ -1,0 +1,31 @@
+# User-provided NoCD v1.1 build; analysis-copy SHA-1 f3c1c14fb6dce46364bf5cee589d2f242e515d4a.
+# Static instruction-boundary/block validation and bounded hook insertion passed; runtime testing pending.
+0x0051B32F  HUD_A0  after [esp+A0]=320
+0x0053682C  HUD_74A  after [esp+74]=320
+0x005369FD  HUD_84  after [esp+84]=320
+0x00536C2D  HUD_94  after [esp+94]=320
+0x00536F75  HUD_74B  after [esp+74]=320
+0x0050B439  HUD_1A0  after [esp+1A0]=320
+0x0048B5D4  HUD_GLOBAL  after [82D2D8]=320
+0x005CC04D  MIRROR_R1  after [esp+30]=440
+0x005CC05D  MIRROR_L1  after [esp+40]=200
+0x005CC06D  MIRROR_L2  after [esp+50]=200
+0x005CC07D  MIRROR_R2  after [esp+60]=440
+0x005CBE49  BORDER_38  after [esp+38]=640
+0x005CBE59  BORDER_48  after [esp+48]=640
+0x005CBDDD  BORDER_2C  after [esp+2C]=640
+0x005CBDF5  BORDER_3C  after [esp+3C]=640
+0x005C71BE  RADAR_W30  after [esp+30]=640
+0x005C71CE  RADAR_W40  after [esp+40]=640
+0x005C71D6  RADAR_H44  after [esp+44]=480
+0x005C71E6  RADAR_H54  after [esp+54]=480
+0x0051B0F8  HUD_HOOK  after ecx/edx stored
+0x0051D5B5  BLIPS_HOOK  before mov [edx],ecx
+0x004C66B9  HUD_HOOK2  after ecx loaded
+0x005050FB  STOP_SIGN  before fadd [edx]
+0x00536992  FMV_QUAD  after 4 pushed extents
+0x005C7EB4  FOV_SCALE  after fidiv, before fstp
+0x005C7F3E  FOV_CONST1  after fdivr 1.0
+0x005C7F50  FOV_CONST2  after fmul 0.5
+0x005C7F75  FOV_CONST3  after fdivr 1.0
+0x005D2BE2  FRAME_TIME  after push 1/60

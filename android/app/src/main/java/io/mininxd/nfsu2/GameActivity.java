@@ -62,6 +62,12 @@ public final class GameActivity extends NativeActivity {
     private boolean foreground;
     private TextView status;
     private PopupWindow statusWindow;
+    private static final java.util.concurrent.atomic.AtomicInteger debugNativeKeyDowns = new java.util.concurrent.atomic.AtomicInteger(0);
+    private static final java.util.concurrent.atomic.AtomicInteger debugNativeKeyErrors = new java.util.concurrent.atomic.AtomicInteger(0);
+    private static final java.util.concurrent.atomic.AtomicInteger debugLastNativeKey = new java.util.concurrent.atomic.AtomicInteger(-1);
+    static int debugNativeKeyDowns() { return debugNativeKeyDowns.get(); }
+    static int debugNativeKeyErrors() { return debugNativeKeyErrors.get(); }
+    static int debugLastNativeKey() { return debugLastNativeKey.get(); }
 
     private android.media.AudioManager audioManager;
     private final android.media.AudioManager.OnAudioFocusChangeListener audioFocusListener = focusChange -> {
@@ -135,7 +141,11 @@ public final class GameActivity extends NativeActivity {
 
     private void sendCombinedKey(int scan) {
         boolean held=touchKeys[scan]||(scan==keyLeft&&tiltLeft)||(scan==keyRight&&tiltRight);
-        if(sentKeys[scan]!=held) {sentKeys[scan]=held;nativeKey(scan,held);}
+        if(sentKeys[scan]!=held) {
+            sentKeys[scan]=held;
+            android.util.Log.i("NFSU2.Input", "DIK " + Integer.toHexString(scan) + (held ? " down" : " up"));
+            nativeKey(scan,held);
+        }
     }
     private void setTouchKey(int scan,boolean down) {touchKeys[scan]=down;sendCombinedKey(scan);}
     private void setTiltKeys(boolean left,boolean right) {tiltLeft=left;tiltRight=right;sendCombinedKey(keyLeft);sendCombinedKey(keyRight);}
@@ -228,7 +238,16 @@ public final class GameActivity extends NativeActivity {
         }
     };
     private static void nativeKey(int scan, boolean down) {
-        com.nfsu2.androidevolved.GameActivity.nativeKey(scan, down);
+        try {
+            com.nfsu2.androidevolved.GameActivity.nativeKey(scan, down);
+            if (down) {
+                debugNativeKeyDowns.incrementAndGet();
+                debugLastNativeKey.set(scan);
+            }
+        } catch (Throwable t) {
+            debugNativeKeyErrors.incrementAndGet();
+            android.util.Log.e("NFSU2.Input", "Native key forwarding failed", t);
+        }
         try { nativeKeyNav(scan, down); } catch (Throwable ignored) {}
     }
     private static native void nativeKeyNav(int scan, boolean down);
@@ -236,6 +255,8 @@ public final class GameActivity extends NativeActivity {
     private static boolean nativeGamepadUsed() { return com.nfsu2.androidevolved.GameActivity.nativeGamepadUsed(); }
     private static void nativeTypeText(String value, boolean replace) { com.nfsu2.androidevolved.GameActivity.nativeTypeText(value, replace); }
     private static void nativePointer(float x, float y, int phase) { com.nfsu2.androidevolved.GameActivity.nativePointer(x, y, phase); }
+    static native String nativeGetRenderDiagnostics();
+    static native void nativeTouchCamera(float x, float y);
     static void nativePointerMiddle(float x, float y, int phase, float dx, float dy) { com.nfsu2.androidevolved.GameActivity.nativePointerMiddle(x, y, phase, dx, dy); }
     private static void nativeLanguage(String language) { com.nfsu2.androidevolved.GameActivity.nativeLanguage(language); }
     private static void nativeResolution(int width, int height) { com.nfsu2.androidevolved.GameActivity.nativeResolution(width, height); }
@@ -333,25 +354,25 @@ public final class GameActivity extends NativeActivity {
     private void showTextInput() {
         EditText name = new EditText(this);
         name.setSingleLine(true);
-        name.setHint("Name, email or password");
+        name.setHint("Введите текст в игре (латиницей)");
+        name.setImportantForAutofill(android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
         name.setFilters(new InputFilter[]{new InputFilter.LengthFilter(40)});
-        name.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD |
-                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        name.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         name.setImeOptions(EditorInfo.IME_ACTION_DONE | EditorInfo.IME_FLAG_NO_EXTRACT_UI);
         CheckBox replace = new CheckBox(this);
-        replace.setText("Replace current name");replace.setChecked(true);
+        replace.setText("Очистить поле перед вводом");replace.setChecked(true);
         LinearLayout form = new LinearLayout(this);form.setOrientation(LinearLayout.VERTICAL);
         form.setPadding(dp(20), 0, dp(20), 0);form.addView(name);form.addView(replace);
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle("Type in game")
+                .setTitle("Ввод текста в игре")
                 .setView(form)
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Type", null)
+                .setNegativeButton("Отмена", null)
+                .setPositiveButton("Ввести", null)
                 .create();
         dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
             String value = name.getText().toString();
             if (value.isEmpty() || !value.matches("[A-Za-z0-9 .,=/;_+?:!@#$%&*()-]{1,40}")) {
-                name.setError("Up to 40 characters: letters, numbers and . , - _ @ + ! # $ % & * ( ) = ? / ; :");
+                name.setError("До 40 символов: латиница, цифры и . , - _ @ + ! # $ % & * ( ) = ? / ; :");
                 return;
             }
             nativeTypeText(value, replace.isChecked());
@@ -432,6 +453,9 @@ public final class GameActivity extends NativeActivity {
             String backend = launch.getStringExtra("graphicsBackend");
             if (backend == null || "auto".equalsIgnoreCase(backend)) backend = GameOptions.getEffectiveGraphicsBackend(this);
             android.system.Os.setenv("NFSU2_RENDERER", backend, true);
+            GpuDrivers.Driver selectedDriver = GpuDrivers.selected(this);
+            android.util.Log.i("NFSU2", "DXVK profile=" + backend + "; requested Vulkan driver="
+                    + (selectedDriver == null ? "system default" : selectedDriver.name));
 
             String drawDist = GameOptions.get(this, GameOptions.DRAW_DISTANCE);
             distVal = 175.0f;

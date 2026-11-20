@@ -91,6 +91,7 @@ target_compile_options(dxvk_android PRIVATE -O3 -fvisibility=hidden -Wno-depreca
 find_library(DXVK_VULKAN_LIBRARY NAMES vulkan libvulkan.so.1 REQUIRED)
 target_link_libraries(dxvk_android PRIVATE ${DXVK_VULKAN_LIBRARY})
 if(ANDROID)
+  target_link_options(dxvk_android PRIVATE "-Wl,-z,max-page-size=16384")
   target_link_libraries(dxvk_android PRIVATE android log dl)
 else()
   find_library(DXVK_X11_LIBRARY NAMES X11 REQUIRED)

@@ -63,6 +63,13 @@ bool isCallbackStalled() {
     return (now - lastCb) > 250000;
 }
 
+uint32_t lastCallbackAgeUs() {
+    int64_t lastCb = s_lastCallbackTimeUs.load(std::memory_order_relaxed);
+    if (lastCb == 0) return UINT32_MAX;
+    int64_t age = std::max<int64_t>(0, currentSteadyUs() - lastCb);
+    return static_cast<uint32_t>(std::min<int64_t>(age, UINT32_MAX - 1ULL));
+}
+
 bool canAttemptReconnect() {
     int64_t now = currentSteadyUs();
     int64_t last = s_lastReconnectAttemptUs.load(std::memory_order_relaxed);

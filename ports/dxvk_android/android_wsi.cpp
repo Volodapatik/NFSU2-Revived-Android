@@ -38,12 +38,36 @@ HMONITOR monitor(){return reinterpret_cast<HMONITOR>(uintptr_t{1});}
 // The Vulkan driver DXVK talks to: the linked system loader, or an imported
 // adrenotools driver chosen in the launcher (set before the device exists).
 std::atomic<PFN_vkGetInstanceProcAddr> instanceProcAddr{nullptr};
+std::atomic<uint64_t> acquireCount{0}, queuePresentCount{0};
+std::atomic<int32_t> lastAcquireResult{0}, lastQueuePresentResult{0};
+std::atomic<uint32_t> swapchainWidth{0}, swapchainHeight{0};
 }
 #define DXVK_EXPORT __attribute__((visibility("default")))
 
 extern "C" DXVK_EXPORT void dxvkAndroidSetInstanceProcAddr(PFN_vkGetInstanceProcAddr entry){instanceProcAddr=entry;}
 extern "C" DXVK_EXPORT PFN_vkGetInstanceProcAddr dxvkAndroidGetInstanceProcAddr(){
     return instanceProcAddr.load();
+}
+extern "C" DXVK_EXPORT void dxvkAndroidRecordAcquireResult(int32_t result){
+    lastAcquireResult.store(result,std::memory_order_relaxed);
+    acquireCount.fetch_add(1,std::memory_order_relaxed);
+}
+extern "C" DXVK_EXPORT void dxvkAndroidRecordQueuePresentResult(int32_t result){
+    lastQueuePresentResult.store(result,std::memory_order_relaxed);
+    queuePresentCount.fetch_add(1,std::memory_order_relaxed);
+}
+extern "C" DXVK_EXPORT void dxvkAndroidRecordSwapchainExtent(uint32_t width,uint32_t height){
+    swapchainWidth.store(width,std::memory_order_relaxed);
+    swapchainHeight.store(height,std::memory_order_relaxed);
+}
+extern "C" DXVK_EXPORT void dxvkAndroidGetPresentStats(uint64_t* acquires,int32_t* acquireResult,
+        uint64_t* presents,int32_t* presentResult,uint32_t* width,uint32_t* height){
+    if(acquires)*acquires=acquireCount.load(std::memory_order_relaxed);
+    if(acquireResult)*acquireResult=lastAcquireResult.load(std::memory_order_relaxed);
+    if(presents)*presents=queuePresentCount.load(std::memory_order_relaxed);
+    if(presentResult)*presentResult=lastQueuePresentResult.load(std::memory_order_relaxed);
+    if(width)*width=swapchainWidth.load(std::memory_order_relaxed);
+    if(height)*height=swapchainHeight.load(std::memory_order_relaxed);
 }
 extern "C" DXVK_EXPORT void dxvkAndroidSetRenderSize(uint32_t width,uint32_t height){std::lock_guard<std::mutex> guard(windowMutex);renderWidth=width;renderHeight=height;
 #ifdef __ANDROID__

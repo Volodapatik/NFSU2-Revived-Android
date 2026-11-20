@@ -5,6 +5,7 @@
 // entry until the first unsupported host service. Returns an honest status.
 std::string connectGuestRuntime(const char* executable);
 void requestGuestRuntimeStop();
+void notifyHaltToHost(const char* message);
 void setGuestPaused(bool paused);
 void setGuestDisplaySize(unsigned width,unsigned height);
 void setGuestKey(unsigned scan,bool down);
@@ -20,6 +21,7 @@ bool guestGamepadInUse();
 void setGuestPadButtonNames(bool playStation);
 // Launcher option; only before the guest boots.
 void setGuestWidescreen(bool enabled);
+void setGuestScreenMode(int mode);
 void setGuestHudSafeArea(bool enabled);
 void setGuestOnlineServer(const std::string& host);
 /** Touch as mouse: x/y as a fraction of the game view; phase 0 down, 1 move, 2 up (left button). */
@@ -34,6 +36,6 @@ void setGuestFrameLimit(unsigned framesPerSecond);
 void setGuestAudioMuted(bool muted);
 void requestGuestAudioRestart();
 void checkGuestProgress();
+extern "C" int guest_is_readable(uint32_t va, uint32_t bytes);
 struct android_app;
 android_app* getActiveAndroidApp();
-

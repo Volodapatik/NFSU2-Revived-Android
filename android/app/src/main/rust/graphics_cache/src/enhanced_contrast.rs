@@ -24,7 +24,7 @@
 //!    locking the game to a solid 60 FPS across all mobile GPUs.
 //! 4. When turned OFF, the identity linear ramp is restored.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
 
 pub const G_OVERBRIGHT_ENABLE_ADDR: usize = 0x00870CFC;
 pub const G_BLEACH_BYPASS_ENABLE_ADDR: usize = 0x00870D00;
@@ -37,12 +37,21 @@ static LAST_INGAME_CONTRAST_VAL: AtomicI32 = AtomicI32::new(1);
 static CONTRAST_FRAME_COUNT: AtomicU32 = AtomicU32::new(0);
 
 // Function pointer for native D3D9 SetGammaRamp callback
-static mut G_RAMP_CALLBACK: Option<unsafe extern "C" fn(i32)> = None;
+static G_RAMP_CALLBACK: AtomicUsize = AtomicUsize::new(0);
+
+#[inline]
+fn call_ramp_callback(enable: i32) {
+    let callback = G_RAMP_CALLBACK.load(Ordering::Acquire);
+    if callback != 0 {
+        let callback: unsafe extern "C" fn(i32) = unsafe { std::mem::transmute(callback) };
+        unsafe { callback(enable) };
+    }
+}
 
 /// Registers the native C/C++ callback to apply hardware tone curve via D3D9 SetGammaRamp.
 #[no_mangle]
 pub unsafe extern "C" fn nfs_contrast_register_ramp_callback(cb: Option<unsafe extern "C" fn(i32)>) {
-    G_RAMP_CALLBACK = cb;
+    G_RAMP_CALLBACK.store(cb.map_or(0, |function| function as usize), Ordering::Release);
 }
 
 /// Applies hardware contrast tone mapping (1 = S-curve high contrast, 0 = linear identity).
@@ -50,11 +59,7 @@ pub unsafe extern "C" fn nfs_contrast_register_ramp_callback(cb: Option<unsafe e
 pub extern "C" fn nfs_contrast_apply_hardware_tone(enable: i32) {
     let active = enable != 0;
     INGAME_CONTRAST_ACTIVE.store(active, Ordering::Relaxed);
-    unsafe {
-        if let Some(cb) = G_RAMP_CALLBACK {
-            cb(enable);
-        }
-    }
+    call_ramp_callback(enable);
 }
 
 /// Checks whether Enhanced Contrast is currently active in the game.
@@ -90,9 +95,7 @@ pub extern "C" fn nfs_contrast_set_active(active: u32) {
     if active_val != last_val {
         LAST_INGAME_CONTRAST_VAL.store(active_val, Ordering::Relaxed);
         INGAME_CONTRAST_ACTIVE.store(is_active, Ordering::Relaxed);
-        if let Some(cb) = G_RAMP_CALLBACK {
-            cb(active_val);
-        }
+        call_ramp_callback(active_val);
     }
 }
 
@@ -131,9 +134,7 @@ pub unsafe extern "C" fn nfs_contrast_sync_ingame(guest_mem: *mut u8) -> u32 {
     if active_val != last_val {
         LAST_INGAME_CONTRAST_VAL.store(active_val, Ordering::Relaxed);
         INGAME_CONTRAST_ACTIVE.store(is_active, Ordering::Relaxed);
-        if let Some(cb) = G_RAMP_CALLBACK {
-            cb(active_val);
-        }
+        call_ramp_callback(active_val);
     }
 
     CONTRAST_FRAME_COUNT.fetch_add(1, Ordering::Relaxed);

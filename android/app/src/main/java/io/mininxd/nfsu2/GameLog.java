@@ -370,6 +370,14 @@ public final class GameLog {
         }
     }
 
+    public static void flushPendingWrites() {
+        try {
+            writerExecutor.submit(() -> {}).get(5, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        } catch (Exception ignored) {}
+    }
+
     public static byte[] getLogBytes(Context ctx) {
         String full = getFullLogText(ctx);
         return full != null ? full.getBytes(java.nio.charset.StandardCharsets.UTF_8) : new byte[0];

@@ -67,7 +67,7 @@ void enterCritical() {
     uint32_t address=arg(0); auto cs=criticalSections.find(address);
     if(cs==criticalSections.end()){
         NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU2","EnterCriticalSection on uninitialized %08x: auto-initializing",address);
-        criticalSections[address]=std::make_shared<FairMutex>();
+        criticalSections[address]=std::make_shared<std::recursive_mutex>();
         write32(address+8,0);write32(address+4,-1);write32(address+12,0);
         cs=criticalSections.find(address);
     }
@@ -505,7 +505,20 @@ void regQueryValueExA(){
     }
     if(!arg(5)){ret(87,6);return;}uint32_t size=read32(arg(5));write32(arg(5),value->second.bytes.size());
     if(arg(3))write32(arg(3),value->second.type);
-    if(arg(4)){if(size<value->second.bytes.size()){ret(234,6);return;}std::memcpy(ptr(arg(4),value->second.bytes.size()),value->second.bytes.data(),value->second.bytes.size());}
+    uint32_t output=arg(4);
+    if(output){
+        if(size<value->second.bytes.size()){ret(234,6);return;}
+        void* destination=ptr(output,value->second.bytes.size());
+        if(output==0x00870CD4u&&!value->second.bytes.empty()){
+            uint32_t oldValue=read32(output),newValue=oldValue;
+            std::memcpy(&newValue,value->second.bytes.data(),std::min(sizeof(newValue),value->second.bytes.size()));
+            uint32_t guestReturn=g_esp?read32(g_esp):0;
+            uint32_t writerPc=(guestReturn==0x005BEB15u||guestReturn==0x005BEF35u)?guestReturn-2:guestReturn;
+            nfsD3D9RecordGuestStateTrace(NFS_GUEST_STATE_TRACE_REGISTRY_COPY,writerPc,oldValue,newValue,
+                                         read32(0x0087099Cu),g_cur_func,g_esp,g_ebp,guestReturn);
+        }
+        std::memcpy(destination,value->second.bytes.data(),value->second.bytes.size());
+    }
     ret(0,6);
 }
 void regSetValueExA(){

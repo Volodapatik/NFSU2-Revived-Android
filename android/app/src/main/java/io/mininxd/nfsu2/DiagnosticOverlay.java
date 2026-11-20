@@ -66,6 +66,7 @@ public final class DiagnosticOverlay {
     private volatile float measuredNativeFps = 0.0f;
     private volatile long lastNativeLogTime = 0;
     private Thread logcatThread;
+    private long lastRenderSnapshotLogTimeMs = 0;
 
     // Native pure Rust telemetry buffer [fps, frame_time_ms, cpu_percent, gpu_busy]
     private final float[] telemetryBuffer = new float[4];
@@ -429,6 +430,27 @@ public final class DiagnosticOverlay {
             displayOnline = onlineCount;
         }
 
+        String renderDebug;
+        try {
+            renderDebug = GameActivity.nativeGetRenderDiagnostics();
+        } catch (Throwable t) {
+            renderDebug = "Renderer counters unavailable";
+        }
+        long renderSnapshotNow = SystemClock.elapsedRealtime();
+        if (!"Renderer counters unavailable".equals(renderDebug)
+                && (lastRenderSnapshotLogTimeMs == 0 || renderSnapshotNow - lastRenderSnapshotLogTimeMs >= 3000)) {
+            lastRenderSnapshotLogTimeMs = renderSnapshotNow;
+            GameLog.log("INFO", "RenderSnapshot", renderDebug.replace('\n', '|'));
+        }
+        int lastTouchScan = RacingControlsView.debugLastTouchScan();
+        String touchDebug = lastTouchScan >= 0
+                ? String.format(Locale.US, "Touch key downs: %d (last DIK 0x%02X)", RacingControlsView.debugTouchKeyDowns(), lastTouchScan)
+                : String.format(Locale.US, "Touch key downs: %d (none yet)", RacingControlsView.debugTouchKeyDowns());
+        int lastNativeKey = GameActivity.debugLastNativeKey();
+        String nativeInputDebug = lastNativeKey >= 0
+                ? String.format(Locale.US, "Guest key forwards: %d (errors %d, last DIK 0x%02X)", GameActivity.debugNativeKeyDowns(), GameActivity.debugNativeKeyErrors(), lastNativeKey)
+                : String.format(Locale.US, "Guest key forwards: %d (errors %d)", GameActivity.debugNativeKeyDowns(), GameActivity.debugNativeKeyErrors());
+
         if (isFull()) {
             StringBuilder sb = new StringBuilder();
             sb.append("fps: ").append(fpsStr).append(" (").append(String.format(Locale.US, "%.1f ms", frameTimeMs)).append(")\n");
@@ -469,7 +491,8 @@ public final class DiagnosticOverlay {
             sb.append(String.format(Locale.US, "gpu_usage: %.0f%%\n", gpu));
             // Display system info directly without "system:" label prefix
             sb.append(gpuDriverName).append(", ").append(cpuModel).append(", ").append(systemPlatform).append('\n');
-            sb.append("memory: ").append(usedMb).append(" MB / ").append(totalMb).append(" MB");
+            sb.append("memory: ").append(usedMb).append(" MB / ").append(totalMb).append(" MB\n");
+            sb.append(renderDebug).append('\n').append(touchDebug).append('\n').append(nativeInputDebug);
             textView.setText(sb.toString());
         } else {
             // Compact Mode: sleek right-aligned HUD

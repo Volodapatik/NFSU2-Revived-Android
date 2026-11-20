@@ -120,8 +120,10 @@ pub fn sync_widescreen_ini(game_root: &Path, menu_size: &str, is_console_pad: bo
     let (c4, ch4) = update_ini_key(&cur, "SingleCoreAffinity", "SingleCoreAffinity = 0                   ; Handled by Rust affinity binder.");
     cur = c4; any_changed |= ch4;
 
-    let (c5, ch5) = update_ini_key(&cur, "ImproveGamepadSupport", &format!("ImproveGamepadSupport = {}                ; 1=Xbox, 2=PS, 3=PC", pad_support));
+    let (c5, ch5) = update_ini_key(&cur, "SkipIntro", "SkipIntro = 1                            ; Skips unsupported startup FMVs on Android.");
     cur = c5; any_changed |= ch5;
+    let (c6, ch6) = update_ini_key(&cur, "ImproveGamepadSupport", &format!("ImproveGamepadSupport = {}                ; 1=Xbox, 2=PS, 3=PC", pad_support));
+    cur = c6; any_changed |= ch6;
 
     if any_changed {
         let _ = fs::write(&path, cur);
@@ -360,5 +362,8 @@ mod tests {
         assert!(changed);
         assert!(updated.contains("FEScale = 1.50"));
         assert!(updated.contains("SkipIntro = 0"));
+        let (updated, changed) = update_ini_key(&updated, "SkipIntro", "SkipIntro = 1");
+        assert!(changed);
+        assert!(updated.contains("SkipIntro = 1"));
     }
 }

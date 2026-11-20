@@ -17,10 +17,12 @@
  */
 #include "recomp_types.h"
 #include "nfs_widescreen.h"
+#include "guest_render_probe.h"
 #include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+extern int guest_is_readable(uint32_t va, uint32_t bytes);
 #if !defined(_WIN32)
 #include <dlfcn.h>
 static void* get_graphics_cache_lib(void) {
@@ -75,7 +77,7 @@ static void load_dat(const char* path) {
 
 /* MiniMap_Pos_1..4 and MiniMap_Filter_Pos in the mod's .dat (names are not
  * loaded; the anchors are what the game draws them at). */
-static int is_minimap(const hud_entry* e) {
+static int __attribute__((unused)) is_minimap(const hud_entry* e) {
     int x = (int)e->pos_x, y = (int)e->pos_y;
     return (x == -223 && (y == 70 || y == 71 || y == 142 || y == 143)) || (x == -143 && y == 196);
 }
@@ -136,11 +138,13 @@ enum { HUD_A0, HUD_74A, HUD_84, HUD_94, HUD_74B, HUD_1A0, HUD_GLOBAL, MIRROR_R1,
 static const uint32_t k_sites[SITE_COUNT] = {
 #if defined(NFSU2_EXE_F4BB0D99)
     0x0051B05Fu, 0x0053655Cu, 0x0053672Du, 0x0053695Du, 0x00536CA5u, 0x0050B099u, 0x0048B5D4u, 0x005CBDCDu, 0x005CBDDDu, 0x005CBDEDu, 0x005CBDFDu, 0x005CBBC9u, 0x005CBBD9u, 0x005CBB5Du, 0x005CBB75u, 0x005C6F3Eu, 0x005C6F4Eu, 0x005C6F56u, 0x005C6F66u, 0x0051AE28u, 0x0051D2E5u, 0x004C6589u, 0x00504D5Fu, 0x005366C2u, 0x005C7C34u, 0x005C7CBEu, 0x005C7CD0u, 0x005C7CF5u, 0x005D2962u,
+#elif defined(NFSU2_EXE_F3C1C14F)
+    0x0051B32Fu, 0x0053682Cu, 0x005369FDu, 0x00536C2Du, 0x00536F75u, 0x0050B439u, 0x0048B5D4u, 0x005CC04Du, 0x005CC05Du, 0x005CC06Du, 0x005CC07Du, 0x005CBE49u, 0x005CBE59u, 0x005CBDDDu, 0x005CBDF5u, 0x005C71BEu, 0x005C71CEu, 0x005C71D6u, 0x005C71E6u, 0x0051B0F8u, 0x0051D5B5u, 0x004C66B9u, 0x005050FBu, 0x00536992u, 0x005C7EB4u, 0x005C7F3Eu, 0x005C7F50u, 0x005C7F75u, 0x005D2BE2u,
 #else
     0x0051B3CFu, 0x005368CCu, 0x00536A9Du, 0x00536CCDu, 0x00537015u, 0x0050B4F9u, 0x0048B644u, 0x005CC0FDu, 0x005CC10Du, 0x005CC11Du, 0x005CC12Du, 0x005CBEF9u, 0x005CBF09u, 0x005CBE8Du, 0x005CBEA5u, 0x005C726Eu, 0x005C727Eu, 0x005C7286u, 0x005C7296u, 0x0051B198u, 0x0051D655u, 0x004C6759u, 0x0050516Fu, 0x00536A32u, 0x005C7F64u, 0x005C7FEEu, 0x005C8000u, 0x005C8025u, 0x005D2C12u,
 #endif
 };
-#if defined(NFSU2_EXE_F4BB0D99)
+#if defined(NFSU2_EXE_F4BB0D99) || defined(NFSU2_EXE_F3C1C14F)
 #define HUD_SCALE_X 0x0079AC0Cu
 #else
 #define HUD_SCALE_X 0x0079AC10u
@@ -340,6 +344,14 @@ static void set_esp_float(uint32_t offset, float value) { wrf(g_esp + offset, va
 
 
 void recomp_hook(uint32_t va) {
+    if (va == 0x005CBEA4u || va == 0x005CBEA9u) {
+        const uint32_t readable = guest_is_readable(0x870974u, sizeof(uint32_t)) ? 1u : 0u;
+        const uint32_t device = readable ? MEM32(0x870974u) : 0u;
+        nfsD3D9RecordGuestHelperTarget(device, readable, 0x005CBE90u,
+                                       va == 0x005CBEA9u ? 1u : 0u);
+    } else if (va == 0x004FE485u) {
+        nfsD3D9RecordGuestGlobal8383AC(g_eax);
+    }
     int site = 0;
     while (site < SITE_COUNT && k_sites[site] != va) ++site;
     if (!s_enabled && site != FRAME_TIME && site != FOV_SCALE) return;

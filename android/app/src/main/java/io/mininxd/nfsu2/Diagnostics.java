@@ -63,14 +63,15 @@ final class Diagnostics {
     static String summary(Context context) {
         GpuDrivers.Driver driver = GpuDrivers.selected(context);
         String backend = GameOptions.getEffectiveGraphicsBackend(context);
-        String apiInfo = "opengl".equals(backend) ? "OpenGL ES" : (driver == null ? "System" : driver.name);
+        String profile = "opengl".equals(backend) ? "OpenGL ES-tuned DXVK profile" : "Vulkan-tuned DXVK profile";
+        String vulkanDriver = driver == null ? "System default" : driver.name;
         return "NFSU2 " + ReleaseUpdates.installed(context)
                 + "\nAPK ABI: " + (Process.is64Bit() ? "arm64-v8a" : "armeabi-v7a")
                 + "\nDevice: " + Build.MANUFACTURER + " " + Build.MODEL
                 + "\nAndroid: " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")"
                 + "\nSoC: " + (Build.VERSION.SDK_INT >= 31 ? Build.SOC_MANUFACTURER + " " + Build.SOC_MODEL : Build.HARDWARE)
-                + "\nGraphics API: " + ("opengl".equals(backend) ? "OpenGL ES" : "Vulkan")
-                + "\nGPU Driver: " + apiInfo + "\n";
+                + "\nDXVK profile: " + profile
+                + "\nVulkan driver: " + vulkanDriver + "\n";
     }
 
     static File createReport(Context context) throws Exception {
@@ -91,6 +92,7 @@ final class Diagnostics {
             add(zip, "report.txt", info.toString().getBytes(StandardCharsets.UTF_8));
             add(zip, "logcat.txt", logcat(0));
             add(zip, "network_log.txt", io.mininxd.nfsu2.net.NetLog.getLogBytes(context));
+            GameLog.flushPendingWrites();
             add(zip, "game_log.txt", GameLog.getLogBytes(context));
             byte[] haltBytes = GameLog.getHaltLogBytes(context);
             if (haltBytes != null && haltBytes.length > 0) {

@@ -20,6 +20,14 @@ int32_t soundLastXruns=0;
 std::atomic<uint32_t> soundCallbackPeakUs{0};
 std::atomic<bool> soundStreamRestartPending{false};
 std::atomic<bool> guestAudioMuted{false};
+std::atomic<int32_t> audioDiagStreamActive{0},audioDiagXruns{-1},audioDiagBufferFrames{-1},audioDiagCapacityFrames{-1},audioDiagBurstFrames{-1};
+std::atomic<uint32_t> audioDiagSampleRate{0},audioDiagCallbackPeakUs{0},audioDiagCallbackAgeUs{0},audioDiagMaxCallbackAgeUs{0},audioDiagProducerGapUs{0},audioDiagRingUs{0};
+std::atomic<uint32_t> audioDiagStallCount{0};
+std::atomic<bool> audioDiagWasStalled{false};
+void audioDiagUpdateMax(std::atomic<uint32_t>& value,uint32_t candidate){
+    uint32_t previous=value.load(std::memory_order_relaxed);
+    while(candidate>previous&&!value.compare_exchange_weak(previous,candidate,std::memory_order_relaxed)){}
+}
 
 void soundErrorCallback(AAudioStream*,void*,aaudio_result_t error){
     NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU2","AAudio error callback: %d (%s)",int(error),AAudio_convertResultToText(error));
@@ -58,7 +66,7 @@ AAudioStream* openSoundStream(aaudio_performance_mode_t mode){
     AAudioStreamBuilder_setSharingMode(builder,AAUDIO_SHARING_MODE_SHARED);
     AAudioStreamBuilder_setPerformanceMode(builder,mode);
     AAudioStreamBuilder_setUsage(builder,AAUDIO_USAGE_GAME);
-    AAudioStreamBuilder_setContentType(builder,AAUDIO_CONTENT_TYPE_GAME);
+    AAudioStreamBuilder_setContentType(builder,AAUDIO_CONTENT_TYPE_MUSIC);
     AAudioStreamBuilder_setBufferCapacityInFrames(builder,48000*soundMaximumMs/1000);
     AAudioStreamBuilder_setDataCallback(builder,soundCallback,nullptr);
     AAudioStreamBuilder_setErrorCallback(builder,soundErrorCallback,nullptr);
@@ -79,17 +87,19 @@ bool startSoundStream(){
         if(AAudioStream* fallback=openSoundStream(AAUDIO_PERFORMANCE_MODE_NONE)){AAudioStream_close(soundStream);soundStream=fallback;}
     }
     if(!soundStream)soundStream=openSoundStream(AAUDIO_PERFORMANCE_MODE_NONE);
-    if(!soundStream)return false;
+    if(!soundStream){audioDiagStreamActive.store(0,std::memory_order_relaxed);return false;}
     soundMixer.rate=unsigned(AAudioStream_getSampleRate(soundStream));
     AAudioStream_setBufferSizeInFrames(soundStream,soundFrames(soundTargetMs));
     soundLastXruns=0;soundCallbackPeakUs=0;
     auto status=AAudioStream_requestStart(soundStream);
-    if(status!=AAUDIO_OK){AAudioStream_close(soundStream);soundStream=nullptr;return false;}
+    if(status!=AAUDIO_OK){AAudioStream_close(soundStream);soundStream=nullptr;audioDiagStreamActive.store(0,std::memory_order_relaxed);return false;}
+    audioDiagStreamActive.store(1,std::memory_order_relaxed);
     nfs_audio_watchdog::startWatchdogThread(soundMixer);
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSU2","AAudio stereo float stream started: %u Hz",soundMixer.rate);return true;
 }
 
 void closeSoundStreamOnly(){
+    audioDiagStreamActive.store(0,std::memory_order_relaxed);
     if(soundStream){
         AAudioStream* s=soundStream;
         soundStream=nullptr;
@@ -117,6 +127,7 @@ bool restartSoundStreamOnly(){
 void serviceGuestSound(){
     nfs_audio_watchdog::serviceSyntheticClock(soundMixer);
     if(!soundStream){
+        audioDiagStreamActive.store(0,std::memory_order_relaxed);
         if(!guestPaused.load(std::memory_order_relaxed)&&nfs_audio_watchdog::canAttemptReconnect()){
             nfs_audio_watchdog::recordReconnectAttempt();
             startSoundStream();
@@ -126,6 +137,11 @@ void serviceGuestSound(){
     bool pending=soundStreamRestartPending.exchange(false,std::memory_order_acq_rel);
     aaudio_stream_state_t state=AAudioStream_getState(soundStream);
     bool stalled=nfs_audio_watchdog::isCallbackStalled();
+    uint32_t callbackAgeUs=nfs_audio_watchdog::lastCallbackAgeUs();
+    audioDiagCallbackAgeUs.store(callbackAgeUs,std::memory_order_relaxed);
+    if(callbackAgeUs!=UINT32_MAX)audioDiagUpdateMax(audioDiagMaxCallbackAgeUs,callbackAgeUs);
+    if(stalled&&!audioDiagWasStalled.exchange(true,std::memory_order_relaxed))audioDiagStallCount.fetch_add(1,std::memory_order_relaxed);
+    else if(!stalled)audioDiagWasStalled.store(false,std::memory_order_relaxed);
     if(pending||stalled||state==AAUDIO_STREAM_STATE_DISCONNECTED||state==AAUDIO_STREAM_STATE_CLOSING||state==AAUDIO_STREAM_STATE_CLOSED){
         NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSU2","AAudio stream disconnected or stalled (state=%d, pending=%d, stalled=%d), restarting stream...",int(state),int(pending),int(stalled));
         if(!guestPaused.load(std::memory_order_relaxed)){
@@ -139,6 +155,12 @@ void serviceGuestSound(){
     }
     int32_t xruns=AAudioStream_getXRunCount(soundStream),burst=AAudioStream_getFramesPerBurst(soundStream);
     int32_t size=AAudioStream_getBufferSizeInFrames(soundStream),capacity=AAudioStream_getBufferCapacityInFrames(soundStream);
+    audioDiagStreamActive.store(1,std::memory_order_relaxed);
+    audioDiagXruns.store(xruns,std::memory_order_relaxed);
+    audioDiagBufferFrames.store(size,std::memory_order_relaxed);
+    audioDiagCapacityFrames.store(capacity,std::memory_order_relaxed);
+    audioDiagBurstFrames.store(burst,std::memory_order_relaxed);
+    audioDiagSampleRate.store(soundMixer.rate,std::memory_order_relaxed);
     if(xruns>soundLastXruns&&burst>0&&size<soundFrames(soundMaximumMs))
         AAudioStream_setBufferSizeInFrames(soundStream,std::min(size+burst,soundFrames(soundMaximumMs)));
     if(xruns>=0)soundLastXruns=xruns;
@@ -153,11 +175,16 @@ void serviceGuestSound(){
                 ringMs=std::max(ringMs,1000.0*voice->samples.size()/voice->block()/voice->frequency);
             }
             object.maxPublishGap={};}}
+    uint32_t publishGapUs=static_cast<uint32_t>(std::min(4294967.0,publishGapMs*1000.0));
+    audioDiagUpdateMax(audioDiagProducerGapUs,publishGapUs);
+    audioDiagRingUs.store(static_cast<uint32_t>(std::min(4294967.0,ringMs*1000.0)),std::memory_order_relaxed);
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSMW","Audio producer: maxPublishGap=%.2f ms ring=%.2f ms",publishGapMs,ringMs);
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSMW","Audio mix: active=%u peak=%.4f clipped=%llu",active,double(peak),static_cast<unsigned long long>(clipped));
+    uint32_t callbackPeak=soundCallbackPeakUs.exchange(0,std::memory_order_relaxed);
+    audioDiagUpdateMax(audioDiagCallbackPeakUs,callbackPeak);
     NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSMW","Audio health: xruns=%d buffer=%d/%d burst=%d rate=%u callbackPeak=%u us mode=%d",
         xruns,AAudioStream_getBufferSizeInFrames(soundStream),capacity,burst,soundMixer.rate,
-        soundCallbackPeakUs.exchange(0,std::memory_order_relaxed),int(AAudioStream_getPerformanceMode(soundStream)));
+        callbackPeak,int(AAudioStream_getPerformanceMode(soundStream)));
 }
 #else
 void serviceGuestSound(){}

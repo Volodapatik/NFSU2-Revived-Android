@@ -15,6 +15,8 @@ void serviceSyntheticClock(PcmMixer& mixer);
 
 // Returns true if audio stream was active but callback has stopped firing for > 250ms.
 bool isCallbackStalled();
+// Age of the most recent rendered callback, or UINT32_MAX before the first callback.
+uint32_t lastCallbackAgeUs();
 
 // Cooldown tracker for AAudio stream reconnection to avoid audio HAL thrashing.
 bool canAttemptReconnect();

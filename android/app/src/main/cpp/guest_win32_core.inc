@@ -86,13 +86,13 @@ inline void compareStringW() {
 
     if (s1 && s2 && memory) {
         if (cch1 < 0) {
-            while (s1 + len1 * 2 < GuestMemory::size && memory->readable(s1 + len1 * 2, 2) &&
+            while (uint64_t(s1) + uint64_t(len1) * 2 < GuestMemory::size && memory->readable(s1 + len1 * 2, 2) &&
                    *static_cast<const uint16_t*>(ptr(s1 + len1 * 2, 2)) != 0) {
                 len1++;
             }
         }
         if (cch2 < 0) {
-            while (s2 + len2 * 2 < GuestMemory::size && memory->readable(s2 + len2 * 2, 2) &&
+            while (uint64_t(s2) + uint64_t(len2) * 2 < GuestMemory::size && memory->readable(s2 + len2 * 2, 2) &&
                    *static_cast<const uint16_t*>(ptr(s2 + len2 * 2, 2)) != 0) {
                 len2++;
             }

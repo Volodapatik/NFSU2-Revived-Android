@@ -1,0 +1,8 @@
+[
+  {
+    "address": "0x00470030",
+    "end": "0x00470070",
+    "entry_kind": "start",
+    "reason": "Relocated callback pointer at guest VA 0x007ED2E0; exact routine spans 0x00470030-0x0047006F and ends before the separate 0x00470070 entry."
+  }
+]

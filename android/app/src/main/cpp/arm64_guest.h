@@ -6,10 +6,15 @@
 // The PC's six-resolution selector cannot describe Android display sizes.
 // Intercept its entry for direct calls as well as dispatch calls; no x86 patch.
 extern int nfs_android_resolution(void);
+#if defined(NFSU2_EXE_F3C1C14F)
+#define NFSU2_ANDROID_RESOLUTION_ENTRY 0x005BF560u
+#else
+#define NFSU2_ANDROID_RESOLUTION_ENTRY 0x005BF610u
+#endif
 #undef RECOMP_ENTER
 #define RECOMP_ENTER(va) do { \
     g_cur_func=(va); RECOMP_FLAGS_IN(); \
-    if((va)==0x005BF610u){ \
+    if((va)==NFSU2_ANDROID_RESOLUTION_ENTRY){ \
         RECOMP_REGS_OUT(); \
         if(nfs_android_resolution()){RECOMP_REGS_IN();return;} \
         RECOMP_REGS_IN(); \

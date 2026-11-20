@@ -52,14 +52,14 @@ public final class LauncherActivity extends Activity {
     private static final int COLOR_WARN = 0xFFFFD36E;
     /** {label, guest language name, LANGUAGES/<file>.bin}. */
     private static final String[][] LANGUAGES = {
-        {"English", "English UK", "English"}, {"Español", "Spanish", "Spanish"},
+        {"Русский", "English UK", "English"}, {"Español", "Spanish", "Spanish"},
         {"Français", "French", "French"}, {"Deutsch", "German", "German"},
         {"Italiano", "Italian", "Italian"}, {"Nederlands", "Dutch", "Dutch"},
         {"Svenska", "Swedish", "Swedish"}, {"Dansk", "Danish", "Danish"},
         {"日本語", "Japanese", "Japanese"}, {"한국어", "Korean", "Korean"},
         {"繁體中文", "Chinese (Traditional)", "Chinese"}, {"ไทย", "Thai", "Thailand"},
         {"Português (Brasil)", "Portuguese", "Portuguese"}, {"Polski", "Polish", "Polish"},
-        {"Русский", "Russian", "Russian"}, {"Türkçe", "Turkish", "Turkish"},
+        {"Türkçe", "Turkish", "Turkish"},
         {"Magyar", "Hungarian", "Hungarian"}
     };
 
@@ -217,7 +217,7 @@ public final class LauncherActivity extends Activity {
         LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(-1, -2);
         cardParams.topMargin = dp(8);
         left.addView(card, cardParams);
-        card.addView(label("GAME FILES", 12, ACCENT, true));
+        card.addView(label("ФАЙЛЫ ИГРЫ", 12, ACCENT, true));
         status = label("", 13, 0xDDFFFFFF, false);
         status.setPadding(0, dp(4), 0, dp(6));
         card.addView(status);
@@ -225,19 +225,19 @@ public final class LauncherActivity extends Activity {
         checksList.setOrientation(LinearLayout.VERTICAL);
         card.addView(checksList);
 
-        play = actionButton("PLAY", true);
+        play = actionButton("ИГРАТЬ", true);
         play.setOnClickListener(view -> play());
         LinearLayout.LayoutParams playParams = new LinearLayout.LayoutParams(-1, dp(54));
         playParams.topMargin = dp(8);
         left.addView(play, playParams);
 
-        access = actionButton("Allow access to internal storage/nfsu2", false);
+        access = actionButton("РАЗРЕШИТЬ ДОСТУП К ПАМЯТИ", false);
         access.setOnClickListener(view -> requestAccess());
         LinearLayout.LayoutParams accessParams = new LinearLayout.LayoutParams(-1, dp(46));
         accessParams.topMargin = dp(10);
         left.addView(access, accessParams);
 
-        downloadFiles = actionButton("Download Game Data", false);
+        downloadFiles = actionButton("УСТАНОВИТЬ ФАЙЛЫ ИГРЫ", false);
         downloadFiles.setOnClickListener(view -> startDownloadOrExtractGameData());
         LinearLayout.LayoutParams dlParams = new LinearLayout.LayoutParams(-1, dp(46));
         dlParams.topMargin = dp(8);
@@ -248,8 +248,8 @@ public final class LauncherActivity extends Activity {
         LinearLayout.LayoutParams rightParams = new LinearLayout.LayoutParams(0, -1, 1f);
         rightParams.leftMargin = dp(24);
         columns.addView(right, rightParams);
-        right.addView(label("SETTINGS & MULTIPLAYER", 12, ACCENT, true));
-        TextView note = label("Applied when pressing PLAY.", 12, TEXT_HINT, false);
+        right.addView(label("НАСТРОЙКИ И СЕТЕВАЯ ИГРА", 12, ACCENT, true));
+        TextView note = label("Применяется при нажатии «ИГРАТЬ».", 12, TEXT_HINT, false);
         note.setPadding(0, dp(2), 0, dp(4));
         right.addView(note);
         ScrollView scroll = new ScrollView(this);
@@ -265,19 +265,24 @@ public final class LauncherActivity extends Activity {
         File root = gameRoot();
         if (allowed) ensureScriptsInstalled(root);
         checksList.removeAllViews();
-        boolean exe = allowed && new File(root, "SPEED2.EXE").isFile();
+        File exePath = gameExe(root);
+        boolean exe = allowed && isSupportedExe(exePath);
         if (allowed && !exe) {
             ensureGamefilesInstalled(root);
-            exe = new File(root, "SPEED2.EXE").isFile();
+            exePath = gameExe(root);
+            exe = isSupportedExe(exePath);
         }
         addCheck("SPEED2.EXE", exe, true);
         StringBuilder missing = new StringBuilder();
-        for (String folder : new String[] {"GLOBAL", "TRACKS", "CARS", "FRONTEND", "LANGUAGES"})
+        for (String folder : new String[] {"CARS", "CREDITS", "FRONTEND", "GLOBAL", "LANGUAGES", "MOVIES", "NIS", "SDATA", "SOUND", "SUBTITLES", "TRACKS"})
             if (!(allowed && new File(root, folder).isDirectory())) missing.append(missing.length() == 0 ? "" : ", ").append(folder);
         addCheck(missing.length() == 0 ? "Game folders" : "Missing folders: " + missing, missing.length() == 0, true);
-        boolean ready = exe && !languages().isEmpty();
-        status.setText(!allowed ? "Allow file access to read internal storage/nfsu2."
-                : ready ? "Internal storage/nfsu2" : "Copy your game files to internal storage/nfsu2.");
+        boolean ready = exe && missing.length() == 0 && !languages().isEmpty();
+        boolean exePresent = allowed && exePath.isFile();
+        status.setText(!allowed ? "Разрешите приложению доступ к файлам телефона."
+                : exePresent && !exe ? "Нужен SPEED2.EXE именно вашей сборки v1.1."
+                : ready ? "Игра установлена: /sdcard/NFSU2"
+                : "Поместите ZIP в /sdcard/cache/NFSU2_GameFiles.zip.");
         play.setEnabled(ready);
         play.setAlpha(ready ? 1f : .45f);
         access.setVisibility(allowed ? View.GONE : View.VISIBLE);
@@ -287,10 +292,34 @@ public final class LauncherActivity extends Activity {
         boolean canInstall = allowed && !ready && (dlUrl != null || localCacheZip.isFile());
         downloadFiles.setVisibility(canInstall ? View.VISIBLE : View.GONE);
         if (canInstall) {
-            downloadFiles.setText(localCacheZip.isFile() ? "Install Game Data (Found in /sdcard/cache)" : "Download & Install Game Data");
+            downloadFiles.setText(localCacheZip.isFile() ? "УСТАНОВИТЬ ZIP ИЗ /sdcard/cache" : "ЗАГРУЗИТЬ И УСТАНОВИТЬ ФАЙЛЫ");
         }
 
         refreshOptions();
+    }
+
+    private static File gameExe(File root) {
+        File upper = new File(root, "SPEED2.EXE");
+        return upper.isFile() ? upper : new File(root, "speed2.exe");
+    }
+
+    private static boolean isSupportedExe(File exe) {
+        if (!exe.isFile() || exe.length() != 4788224L) return false;
+        try (java.io.InputStream in = new java.io.FileInputStream(exe)) {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buffer = new byte[32768];
+            int read;
+            while ((read = in.read(buffer)) > 0) digest.update(buffer, 0, read);
+            char[] digits = "0123456789abcdef".toCharArray();
+            StringBuilder actual = new StringBuilder(64);
+            for (byte value : digest.digest()) {
+                int b = value & 0xff;
+                actual.append(digits[b >>> 4]).append(digits[b & 0x0f]);
+            }
+            return "fa940fe56c8af619a62e6c9cba5c552a01832424a7ee2189af9814d3c531a38f".equals(actual.toString());
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 
     private String getGamefilesUrl() {
@@ -346,8 +375,8 @@ public final class LauncherActivity extends Activity {
             try {
                 File targetZip = localCacheZip;
                 if (!targetZip.isFile()) {
-                    if (url == null) throw new RuntimeException("No download URL or cache zip found");
-                    main.post(() -> status.setText("Connecting to download game files..."));
+                    if (url == null) throw new RuntimeException("Не найден ZIP-архив в /sdcard/cache и не задан адрес загрузки.");
+                    main.post(() -> status.setText("Подключение для загрузки файлов игры..."));
                     File cacheDir = new File(Environment.getExternalStorageDirectory(), "cache");
                     if (!cacheDir.exists()) cacheDir.mkdirs();
                     targetZip = new File(cacheDir, "NFSU2_GameFiles.zip");
@@ -372,9 +401,9 @@ public final class LauncherActivity extends Activity {
                                 main.post(() -> {
                                     if (t > 0) {
                                         int pct = (int) (((long) d * 100) / t);
-                                        status.setText("Downloading: " + pct + "% (" + (d / (1024 * 1024)) + "/" + (t / (1024 * 1024)) + " MB)");
+                                        status.setText("Загрузка: " + pct + "% (" + (d / (1024 * 1024)) + "/" + (t / (1024 * 1024)) + " МБ)");
                                     } else {
-                                        status.setText("Downloading: " + (d / (1024 * 1024)) + " MB");
+                                        status.setText("Загрузка: " + (d / (1024 * 1024)) + " МБ");
                                     }
                                 });
                             }
@@ -382,18 +411,18 @@ public final class LauncherActivity extends Activity {
                     }
                 }
 
-                main.post(() -> status.setText("Extracting game files to internal storage..."));
-                File destDir = Environment.getExternalStorageDirectory();
+                main.post(() -> status.setText("Распаковка файлов игры в /sdcard/NFSU2..."));
+                File destDir = gameRoot();
                 extractZip(targetZip, destDir);
 
                 main.post(() -> {
-                    status.setText("Game files installed successfully!");
+                    status.setText("Файлы игры установлены.");
                     refresh();
                 });
             } catch (Exception e) {
                 android.util.Log.e("NFSU2", "Failed to download or install game data", e);
                 main.post(() -> {
-                    status.setText("Installation error: " + e.getMessage());
+                    status.setText("Ошибка установки: " + e.getMessage());
                     downloadFiles.setEnabled(true);
                     downloadFiles.setAlpha(1.0f);
                 });
@@ -401,25 +430,77 @@ public final class LauncherActivity extends Activity {
         });
     }
 
-    private static void extractZip(File zipFile, File destDir) throws Exception {
+    private void extractZip(File zipFile, File destDir) throws Exception {
+        if (!destDir.exists() && !destDir.mkdirs()) throw new java.io.IOException("Не удалось создать папку /sdcard/NFSU2.");
         byte[] buffer = new byte[32768];
-        try (java.util.zip.ZipInputStream zis = new java.util.zip.ZipInputStream(new java.io.FileInputStream(zipFile))) {
-            java.util.zip.ZipEntry entry;
-            while ((entry = zis.getNextEntry()) != null) {
-                File target = new File(destDir, entry.getName());
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(zipFile)) {
+            String prefix = null;
+            java.util.Enumeration<? extends java.util.zip.ZipEntry> entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                String name = entries.nextElement().getName().replace('\\', '/');
+                int slash = name.lastIndexOf('/');
+                String base = slash < 0 ? name : name.substring(slash + 1);
+                if (base.equalsIgnoreCase("SPEED2.EXE")) {
+                    String candidate = slash < 0 ? "" : name.substring(0, slash + 1);
+                    if (prefix != null && !prefix.equals(candidate)) throw new java.io.IOException("В ZIP найдено несколько файлов SPEED2.EXE.");
+                    prefix = candidate;
+                }
+            }
+            if (prefix == null) throw new java.io.IOException("В ZIP-архиве не найден SPEED2.EXE.");
+
+            long totalBytes = 0;
+            entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                java.util.zip.ZipEntry entry = entries.nextElement();
+                String name = entry.getName().replace('\\', '/');
+                if (!prefix.isEmpty()) {
+                    if (!name.startsWith(prefix)) continue;
+                    name = name.substring(prefix.length());
+                }
+                if (!name.isEmpty() && !entry.isDirectory() && entry.getSize() > 0) totalBytes += entry.getSize();
+            }
+            android.os.StatFs space = new android.os.StatFs(destDir.getAbsolutePath());
+            if (totalBytes > 0 && space.getAvailableBytes() < totalBytes + (16L * 1024 * 1024))
+                throw new java.io.IOException("Недостаточно свободного места для распаковки файлов игры.");
+
+            String rootPath = destDir.getCanonicalPath();
+            long copiedBytes = 0;
+            long lastReport = 0;
+            entries = zip.entries();
+            while (entries.hasMoreElements()) {
+                java.util.zip.ZipEntry entry = entries.nextElement();
+                String name = entry.getName().replace('\\', '/');
+                if (!prefix.isEmpty()) {
+                    if (!name.startsWith(prefix)) continue;
+                    name = name.substring(prefix.length());
+                }
+                if (name.isEmpty()) continue;
+                File target = new File(destDir, name);
+                String targetPath = target.getCanonicalPath();
+                if (!targetPath.startsWith(rootPath + File.separator)) throw new java.io.IOException("Недопустимый путь в ZIP: " + name);
                 if (entry.isDirectory()) {
-                    target.mkdirs();
+                    if (!target.isDirectory() && !target.mkdirs()) throw new java.io.IOException("Не удалось создать папку: " + name);
                 } else {
                     File parent = target.getParentFile();
-                    if (parent != null && !parent.exists()) parent.mkdirs();
-                    try (java.io.FileOutputStream fos = new java.io.FileOutputStream(target)) {
+                    if (parent != null && !parent.isDirectory() && !parent.mkdirs()) throw new java.io.IOException("Не удалось создать папку: " + parent.getName());
+                    try (java.io.InputStream in = zip.getInputStream(entry);
+                         java.io.FileOutputStream out = new java.io.FileOutputStream(target)) {
                         int len;
-                        while ((len = zis.read(buffer)) > 0) fos.write(buffer, 0, len);
+                        while ((len = in.read(buffer)) > 0) {
+                            out.write(buffer, 0, len);
+                            copiedBytes += len;
+                            long now = System.currentTimeMillis();
+                            if (totalBytes > 0 && now - lastReport >= 400) {
+                                lastReport = now;
+                                final int percent = (int) Math.min(100, copiedBytes * 100 / totalBytes);
+                                main.post(() -> status.setText("Распаковка файлов игры: " + percent + "%"));
+                            }
+                        }
                     }
                 }
-                zis.closeEntry();
             }
         }
+        if (!isSupportedExe(gameExe(destDir))) throw new java.io.IOException("SPEED2.EXE не совпадает с поддерживаемой сборкой v1.1.");
     }
 
     private void ensureScriptsInstalled(File root) {
@@ -561,7 +642,7 @@ public final class LauncherActivity extends Activity {
 
     private void chooseLanguage() {
         List<String[]> found = allowed() ? languages() : new ArrayList<>();
-        if (found.isEmpty()) { message("Language", "No languages found in internal storage/nfsu2/LANGUAGES."); return; }
+        if (found.isEmpty()) { message("Язык", "Сначала установите файлы игры с папкой LANGUAGES."); return; }
         String[] names = new String[found.size()];
         int checked = 0;
         String current = GameOptions.language(this);
@@ -569,13 +650,13 @@ public final class LauncherActivity extends Activity {
             names[i] = found.get(i)[0];
             if (found.get(i)[1].equalsIgnoreCase(current)) checked = i;
         }
-        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle("Language")
+        new AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle("Язык")
                 .setSingleChoiceItems(names, checked, (dialog, which) -> {
                     String selected = found.get(which)[1];
                     if ("English".equalsIgnoreCase(selected)) selected = "English UK";
                     GameOptions.prefs(this).edit().putString(GameOptions.LANGUAGE, selected).apply();
                     dialog.dismiss(); refreshOptions();
-                }).setNegativeButton("Cancel", null).show();
+                }).setNegativeButton("Отмена", null).show();
     }
 
     private void chooseOption(GameOptions.Option option) {

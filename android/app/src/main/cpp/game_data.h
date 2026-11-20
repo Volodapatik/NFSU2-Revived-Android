@@ -55,8 +55,13 @@ inline void checkGameData() {
     const size_t read = std::fread(magic, 1, 2, exe);
     std::fclose(exe);
     struct stat info{};
+#if defined(NFSU2_EXE_F3C1C14F)
+    constexpr off_t expectedExeBytes = 4788224;
+#else
+    constexpr off_t expectedExeBytes = 4800512;
+#endif
     if (read != 2 || magic[0] != 'M' || magic[1] != 'Z' ||
-        stat(exePath.c_str(), &info) || info.st_size != 4800512)
+        stat(exePath.c_str(), &info) || info.st_size != expectedExeBytes)
         throw std::runtime_error("SPEED2.EXE does not match expected image size/header");
     for (const char* name : {"CARS", "CREDITS", "FRONTEND", "GLOBAL", "LANGUAGES", "MOVIES",
                              "NIS", "SDATA", "SOUND", "SUBTITLES", "TRACKS"}) {

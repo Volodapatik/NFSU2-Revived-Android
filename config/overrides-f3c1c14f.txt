@@ -1,0 +1,4 @@
+# User's NoCD v1.1 PE; static function/signature/call-site mappings.
+0x005C6820  Bleach bypass: v1.1 equivalent of the Android tone-regulation override
+0x006F5FA5  Cyrix probe: exact v1.1 DIV/Sahf/Lahf signature
+0x0075CF00  CRT memcpy/memmove: v1.1 overlap-safe implementation equivalent

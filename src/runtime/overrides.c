@@ -66,8 +66,11 @@ static void ov_bleach_bypass(void) {
 
 static const struct { uint32_t va; nfs_override_fn fn; } k_overrides[] = {
     { 0x005C68D0u, ov_bleach_bypass },
+    { 0x005C6820u, ov_bleach_bypass },
     { 0x006F5FC5u, ov_is_cyrix },
+    { 0x006F5FA5u, ov_is_cyrix },
     { 0x0075CFD0u, ov_crt_memmove },
+    { 0x0075CF00u, ov_crt_memmove },
 };
 
 nfs_override_fn nfs_override_lookup(uint32_t va) {

@@ -1,5 +1,6 @@
 #include <android_native_app_glue.h>
 #include <android/log.h>
+#include <jni.h>
 #include <vulkan/vulkan.h>
 #include <algorithm>
 #include <vector>
@@ -11,8 +12,10 @@
 #include <cstring>
 #include <thread>
 #include <chrono>
+#include <cstdio>
 #include <filesystem>
 #include <cstdlib>
+#include <dlfcn.h>
 #include <unistd.h>
 #include "vertex_formats.h"
 #include "guest_memory.h"
@@ -25,7 +28,14 @@
 #include "universal_gpu_loader.h"
 #include "nfs_widescreen.h"
 
+extern "C" void nfsD3D9GetDebugStats(uint64_t*,uint64_t*,uint32_t*,uint64_t*,uint32_t*);
+extern "C" void nfsD3D9GetBackbufferProbe(uint32_t*,uint32_t*,uint32_t*,uint32_t*,uint32_t*,uint32_t*,uint32_t*,uint32_t*);
+extern "C" void dxvkAndroidGetPresentStats(uint64_t*,int32_t*,uint64_t*,int32_t*,uint32_t*,uint32_t*);
+extern "C" void nfsGuestAudioGetDebugStats(int32_t*,int32_t*,int32_t*,int32_t*,int32_t*,uint32_t*,uint32_t*,uint32_t*,uint32_t*,uint32_t*,uint32_t*,uint32_t*);
+
 static android_app* s_active_app = nullptr;
+static uint32_t s_vulkanApiVersion = VK_API_VERSION_1_3;
+static void showStatus(android_app* app, const char* message);
 android_app* getActiveAndroidApp() {
     return s_active_app;
 }
@@ -354,7 +364,197 @@ static int32_t onInput(android_app*,AInputEvent* event){
 extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeKey(JNIEnv*,jclass,jint scan,jboolean down){
     setGuestKey(unsigned(scan),down==JNI_TRUE);
 }
+extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeKeyNav(JNIEnv*,jclass,jint scan,jboolean down){
+    // Optional roam-only selector hook. The actual guest key state is already
+    // sent by nativeKey above, so this remains safe when the roam library is absent.
+    (void)scan;
+    (void)down;
+}
 extern "C" JNIEXPORT jboolean JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeDrivingControls(JNIEnv*,jclass){return guestDrivingControls()?JNI_TRUE:JNI_FALSE;}
+extern "C" JNIEXPORT jstring JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeGetRenderDiagnostics(JNIEnv* env,jclass){
+    uint64_t createAttempts=0,createSuccesses=0,d3dPresents=0,vkAcquires=0,vkPresents=0;
+    uint32_t lastCreate=0xffffffffu,lastD3dPresent=0xffffffffu,width=0,height=0;
+    int32_t lastAcquire=0,lastVkPresent=0;
+    nfsD3D9GetDebugStats(&createAttempts,&createSuccesses,&lastCreate,&d3dPresents,&lastD3dPresent);
+    dxvkAndroidGetPresentStats(&vkAcquires,&lastAcquire,&vkPresents,&lastVkPresent,&width,&height);
+    uint32_t probeState=0,probePoints=0,probeNonBlack=0,probeWidth=0,probeHeight=0,probeFormat=0,probeMs=0,probeResult=0xffffffffu;
+    nfsD3D9GetBackbufferProbe(&probeState,&probePoints,&probeNonBlack,&probeWidth,&probeHeight,&probeFormat,&probeMs,&probeResult);
+    D3D9RenderSnapshot renderSnapshot{};
+    nfsD3D9GetRenderSnapshot(&renderSnapshot);
+    int32_t audioActive=0,audioXruns=-1,audioBuffer=-1,audioCapacity=-1,audioBurst=-1;
+    uint32_t audioRate=0,audioCallbackPeak=0,audioCallbackAge=0,audioMaxCallbackAge=0,audioProducerGap=0,audioRing=0,audioStalls=0;
+    nfsGuestAudioGetDebugStats(&audioActive,&audioXruns,&audioBuffer,&audioCapacity,&audioBurst,&audioRate,&audioCallbackPeak,
+        &audioCallbackAge,&audioMaxCallbackAge,&audioProducerGap,&audioRing,&audioStalls);
+    char createStatus[16],d3dStatus[16],acquireStatus[16],vkPresentStatus[16];
+    if(createAttempts)std::snprintf(createStatus,sizeof(createStatus),"0x%08X",lastCreate);else std::snprintf(createStatus,sizeof(createStatus),"pending");
+    if(d3dPresents)std::snprintf(d3dStatus,sizeof(d3dStatus),"0x%08X",lastD3dPresent);else std::snprintf(d3dStatus,sizeof(d3dStatus),"pending");
+    if(vkAcquires)std::snprintf(acquireStatus,sizeof(acquireStatus),"0x%08X",uint32_t(lastAcquire));else std::snprintf(acquireStatus,sizeof(acquireStatus),"pending");
+    if(vkPresents)std::snprintf(vkPresentStatus,sizeof(vkPresentStatus),"0x%08X",uint32_t(lastVkPresent));else std::snprintf(vkPresentStatus,sizeof(vkPresentStatus),"pending");
+    char probeText[160],audioText[192],audioGapText[192];
+    if(probeState==0)std::snprintf(probeText,sizeof(probeText),"Backbuffer probe: armed; waits for 120 D3D9 frames");
+    else if(probeState==4)std::snprintf(probeText,sizeof(probeText),"Backbuffer probe: sampling once...");
+    else if(probeState==1)std::snprintf(probeText,sizeof(probeText),"Backbuffer: non-black=%u/%u, %ux%u fmt=%u (%u ms)",probeNonBlack,probePoints,probeWidth,probeHeight,probeFormat,probeMs);
+    else if(probeState==3)std::snprintf(probeText,sizeof(probeText),"Backbuffer probe unsupported: fmt=%u result=0x%08X",probeFormat,probeResult);
+    else std::snprintf(probeText,sizeof(probeText),"Backbuffer probe failed: 0x%08X, %ux%u fmt=%u (%u ms)",probeResult,probeWidth,probeHeight,probeFormat,probeMs);
+    if(!audioActive)std::snprintf(audioText,sizeof(audioText),"Audio: AAudio stream inactive/unavailable");
+    else if(audioRate&&audioBuffer>=0)std::snprintf(audioText,sizeof(audioText),"Audio: xruns=%d buffer=%d/%d frames (%.1f ms), burst=%d, %u Hz",
+        audioXruns,audioBuffer,audioCapacity,1000.0*audioBuffer/audioRate,audioBurst,audioRate);
+    else std::snprintf(audioText,sizeof(audioText),"Audio: xruns=%d buffer=%d/%d frames, burst=%d, %u Hz",audioXruns,audioBuffer,audioCapacity,audioBurst,audioRate);
+    std::snprintf(audioGapText,sizeof(audioGapText),"Audio peaks: callback=%u us, callback age=%u/%u ms, update gap=%u ms, ring=%u ms, stalls=%u",
+        audioCallbackPeak,audioCallbackAge==UINT32_MAX?UINT32_MAX:audioCallbackAge/1000,
+        audioMaxCallbackAge==UINT32_MAX?UINT32_MAX:audioMaxCallbackAge/1000,audioProducerGap/1000,audioRing/1000,audioStalls);
+    if(audioCallbackAge==UINT32_MAX)std::snprintf(audioGapText,sizeof(audioGapText),"Audio peaks: callback=%u us, callback age=n/a, max age=n/a, update gap=%u ms, ring=%u ms, stalls=%u",
+        audioCallbackPeak,audioProducerGap/1000,audioRing/1000,audioStalls);
+    else if(audioMaxCallbackAge==UINT32_MAX)std::snprintf(audioGapText,sizeof(audioGapText),"Audio peaks: callback=%u us, callback age=%u ms, max age=n/a, update gap=%u ms, ring=%u ms, stalls=%u",
+        audioCallbackPeak,audioCallbackAge/1000,audioProducerGap/1000,audioRing/1000,audioStalls);
+    const auto& beginScene=renderSnapshot.methods[static_cast<uint32_t>(D3D9RenderStat::BeginScene)];
+    const auto& clear=renderSnapshot.methods[static_cast<uint32_t>(D3D9RenderStat::Clear)];
+    const auto& endScene=renderSnapshot.methods[static_cast<uint32_t>(D3D9RenderStat::EndScene)];
+    const auto& setRenderTarget=renderSnapshot.methods[static_cast<uint32_t>(D3D9RenderStat::SetRenderTarget)];
+    const auto& stretchRect=renderSnapshot.methods[static_cast<uint32_t>(D3D9RenderStat::StretchRect)];
+    const auto& drawIndexed=renderSnapshot.methods[static_cast<uint32_t>(D3D9RenderStat::DrawIndexedPrimitive)];
+    const auto& drawUP=renderSnapshot.methods[static_cast<uint32_t>(D3D9RenderStat::DrawPrimitiveUP)];
+    const char* drawPath=drawIndexed.lastPath==1?"forwarded":drawIndexed.lastPath==2?"culled":"none";
+    const char* drawUPPath=drawUP.lastPath==1?"forwarded":drawUP.lastPath==2?"culled":drawUP.calls?"pending":"none";
+    const auto& target=renderSnapshot.activeTarget;
+    const char* targetKind=target.state==0?"pending":target.state==1?"reading":target.state==3?"unavailable":
+        target.isImplicitBackbuffer==1?"backbuffer":target.isImplicitBackbuffer==2?"offscreen":"unknown";
+    const auto& targetBefore=renderSnapshot.helperTargetBefore;
+    const auto& targetAfter=renderSnapshot.helperTargetAfter;
+    const auto& queue0=renderSnapshot.bucketHelpers[0];
+    const auto& queue1=renderSnapshot.bucketHelpers[1];
+    const auto& helperUP=renderSnapshot.helperUP;
+    const char* helperUPState=helperUP.state==0?"not seen":helperUP.state==1?"metadata only":helperUP.state==2?"validated": "args rejected";
+    const char* helperUPData=helperUP.dataStatus==0?"not checked":helperUP.dataStatus==1?"copied":helperUP.dataStatus==2?"unreadable":
+        helperUP.dataStatus==3?"unexpected shape":helperUP.dataStatus==4?"oversize":"unknown";
+    const auto targetName=[](const D3D9RenderTargetSnapshot& value)->const char*{
+        return value.state==0?"pending":value.state==1?"reading":value.state==3?"unavailable":
+            value.isImplicitBackbuffer==1?"backbuffer":value.isImplicitBackbuffer==2?"offscreen":"unknown";
+    };
+    const auto& guestRender=renderSnapshot.guestRender;
+    const auto& flow=renderSnapshot.guestFlow;
+    char renderText[3584];
+    std::snprintf(renderText,sizeof(renderText),"BScene=%u/%u hr=%08X pc=%08X; Clear=%u/%u hr=%08X pc=%08X\n"
+        "EndScene=%u/%u hr=%08X pc=%08X; SetRT=%u/%u hr=%08X pc=%08X\n"
+        "Stretch=%u/%u hr=%08X pc=%08X; DrawIdx=%u/%u/%u last=%s hr=%08X pc=%08X\n"
+        "DrawUP=%u/%u/%u last=%s hr=%08X pc=%08X\n"
+        "Active RT0=%s %ux%u fmt=%u use=%08X pool=%u ms=%u/%u type=%u hr=%08X pc=%08X\n"
+        "Helper RT0 pre=%s %ux%u fmt=%u use=%08X pool=%u ms=%u/%u type=%u hr=%08X pc=%08X\n"
+        "Helper RT0 post=%s %ux%u fmt=%u use=%08X pool=%u ms=%u/%u type=%u hr=%08X pc=%08X\n"
+        "Guest calls=%llu buckets=%llu empty=%llu nonempty=%llu last=%08X/%08X; route idx=%llu up=%llu last=%08X obj=%08X\n"
+        "Idx count +/<=0=%llu/%llu last=%u max=%u; UP count +/<=0=%llu/%llu last=%u max=%u; 0x8383AC=%08X reads=%llu\n"
+        "Q0(CE9E0) calls=%llu existing-skip=%llu alloc-null(P/A)=%llu/%llu bucket-selects=%llu links(nonzero/zero)=%llu/%llu invalid=%llu last=%08X bank/index=%u/%u\n"
+        " Q0 bank0 sel/link/touched/hot=%llu/%llu/%llu/%u:%u; bank1=%llu/%llu/%llu/%u:%u\n"
+        "Q1(CEAE0) calls=%llu existing-skip=%llu alloc-null(P/A)=%llu/%llu bucket-selects=%llu links(nonzero/zero)=%llu/%llu invalid=%llu last=%08X bank/index=%u/%u\n"
+        " Q1 bank0 sel/link/touched/hot=%llu/%llu/%llu/%u:%u; bank1=%llu/%llu/%llu/%u:%u\n"
+        "HelperUP %s data=%s caller=%08X type/count=%u/%u verts=%u stride=%u bytes=%u ptr=%08X FVF hr=%08X val=%08X tex=%u type=%u hr=%08X\n"
+        " TSS mask=%02X coord=%08X xform=%08X color=%u/%u/%u alpha=%u/%u/%u; pos X=%g..%g Y=%g..%g Z=%g..%g\n"
+        " RGBA min=%u,%u,%u,%u max=%u,%u,%u,%u; UV min=%g,%g,%g,%g max=%g,%g,%g,%g",
+        beginScene.calls,beginScene.forwarded,beginScene.lastResult,beginScene.lastCaller,
+        clear.calls,clear.forwarded,clear.lastResult,clear.lastCaller,
+        endScene.calls,endScene.forwarded,endScene.lastResult,endScene.lastCaller,
+        setRenderTarget.calls,setRenderTarget.forwarded,setRenderTarget.lastResult,setRenderTarget.lastCaller,
+        stretchRect.calls,stretchRect.forwarded,stretchRect.lastResult,stretchRect.lastCaller,
+        drawIndexed.calls,drawIndexed.forwarded,drawIndexed.culled,drawPath,drawIndexed.lastResult,drawIndexed.lastCaller,
+        drawUP.calls,drawUP.forwarded,drawUP.culled,drawUPPath,drawUP.lastResult,drawUP.lastCaller,
+        targetKind,target.width,target.height,target.format,target.usage,target.pool,target.multisample,target.multisampleQuality,
+        target.type,target.lastResult,target.lastCaller,
+        targetName(targetBefore),targetBefore.width,targetBefore.height,targetBefore.format,targetBefore.usage,targetBefore.pool,
+        targetBefore.multisample,targetBefore.multisampleQuality,targetBefore.type,targetBefore.lastResult,targetBefore.lastCaller,
+        targetName(targetAfter),targetAfter.width,targetAfter.height,targetAfter.format,targetAfter.usage,targetAfter.pool,
+        targetAfter.multisample,targetAfter.multisampleQuality,targetAfter.type,targetAfter.lastResult,targetAfter.lastCaller,
+        static_cast<unsigned long long>(guestRender.calls),static_cast<unsigned long long>(guestRender.bucketChecks),
+        static_cast<unsigned long long>(guestRender.bucketsEmpty),static_cast<unsigned long long>(guestRender.bucketsNonempty),
+        guestRender.lastBucketAddress,guestRender.lastBucketHead,static_cast<unsigned long long>(guestRender.routeIndexed),
+        static_cast<unsigned long long>(guestRender.routeUp),guestRender.lastRouteValue,guestRender.lastObjectAddress,
+        static_cast<unsigned long long>(guestRender.indexedCountPositive),static_cast<unsigned long long>(guestRender.indexedCountNonPositive),
+        guestRender.lastIndexedCount,guestRender.maxIndexedCount,static_cast<unsigned long long>(guestRender.upCountPositive),
+        static_cast<unsigned long long>(guestRender.upCountNonPositive),guestRender.lastUpCount,guestRender.maxUpCount,
+        renderSnapshot.guestGlobal8383ACValue,static_cast<unsigned long long>(renderSnapshot.guestGlobal8383ACReads),
+        static_cast<unsigned long long>(queue0.calls),static_cast<unsigned long long>(queue0.existingNodeSkips),
+        static_cast<unsigned long long>(queue0.primaryAllocatorNull),static_cast<unsigned long long>(queue0.auxiliaryAllocatorNull),
+        static_cast<unsigned long long>(queue0.bucketSelections),static_cast<unsigned long long>(queue0.linkedNonNull),
+        static_cast<unsigned long long>(queue0.linkedNull),static_cast<unsigned long long>(queue0.invalidBucketAddresses),
+        queue0.lastBucketAddress,queue0.lastBank,queue0.lastBucketIndex,
+        static_cast<unsigned long long>(queue0.bankSelections[0]),static_cast<unsigned long long>(queue0.bankLinkedNonNull[0]),
+        static_cast<unsigned long long>(queue0.touchedBuckets[0]),queue0.hottestBucket[0],queue0.hottestBucketHits[0],
+        static_cast<unsigned long long>(queue0.bankSelections[1]),static_cast<unsigned long long>(queue0.bankLinkedNonNull[1]),
+        static_cast<unsigned long long>(queue0.touchedBuckets[1]),queue0.hottestBucket[1],queue0.hottestBucketHits[1],
+        static_cast<unsigned long long>(queue1.calls),static_cast<unsigned long long>(queue1.existingNodeSkips),
+        static_cast<unsigned long long>(queue1.primaryAllocatorNull),static_cast<unsigned long long>(queue1.auxiliaryAllocatorNull),
+        static_cast<unsigned long long>(queue1.bucketSelections),static_cast<unsigned long long>(queue1.linkedNonNull),
+        static_cast<unsigned long long>(queue1.linkedNull),static_cast<unsigned long long>(queue1.invalidBucketAddresses),
+        queue1.lastBucketAddress,queue1.lastBank,queue1.lastBucketIndex,
+        static_cast<unsigned long long>(queue1.bankSelections[0]),static_cast<unsigned long long>(queue1.bankLinkedNonNull[0]),
+        static_cast<unsigned long long>(queue1.touchedBuckets[0]),queue1.hottestBucket[0],queue1.hottestBucketHits[0],
+        static_cast<unsigned long long>(queue1.bankSelections[1]),static_cast<unsigned long long>(queue1.bankLinkedNonNull[1]),
+        static_cast<unsigned long long>(queue1.touchedBuckets[1]),queue1.hottestBucket[1],queue1.hottestBucketHits[1],
+        helperUPState,helperUPData,helperUP.caller,helperUP.primitiveType,helperUP.primitiveCount,helperUP.vertexCount,
+        helperUP.stride,helperUP.byteCount,helperUP.guestVertexAddress,helperUP.fvfResult,helperUP.fvf,
+        helperUP.textureBound,helperUP.textureType,helperUP.textureResult,helperUP.stageStateValidMask,
+        helperUP.texCoordIndex,helperUP.textureTransformFlags,helperUP.colorOp,helperUP.colorArg1,helperUP.colorArg2,
+        helperUP.alphaOp,helperUP.alphaArg1,helperUP.alphaArg2,
+        helperUP.positionMin[0],helperUP.positionMax[0],helperUP.positionMin[1],helperUP.positionMax[1],
+        helperUP.positionMin[2],helperUP.positionMax[2],
+        helperUP.colorMin[0],helperUP.colorMin[1],helperUP.colorMin[2],helperUP.colorMin[3],
+        helperUP.colorMax[0],helperUP.colorMax[1],helperUP.colorMax[2],helperUP.colorMax[3],
+        helperUP.texcoordMin[0],helperUP.texcoordMax[0],helperUP.texcoordMin[1],helperUP.texcoordMax[1],
+        helperUP.texcoordMin[2],helperUP.texcoordMax[2],helperUP.texcoordMin[3],helperUP.texcoordMax[3]);
+    char flowText[1600];
+    std::snprintf(flowText,sizeof(flowText),
+        "Flow 5D2AD6 hit/take/skip=%llu/%llu/%llu cmp=%08X/%08X; 5D2B1D hit/call/skip=%llu/%llu/%llu 864F4C/count=%08X/%08X\n"
+        "Flow entries CAA/30DE0/316D0/162E0/20AE0=%llu/%llu/%llu/%llu/%llu; CAA 870CD4=%08X zero=%llu\n"
+        "30DE0 mode=%08X eq6=%llu global=%08X zero=%llu count=%08X zero=%llu obj=%08X\n"
+        "316D0 global=%08X zero=%llu list890080=%08X empty=%llu obj=%08X\n"
+        "Q0 callsite 6173D1/621D96/621E79/6220B5/622EB2=%llu/%llu/%llu/%llu/%llu\n"
+        "Q1 5C5880 entry=%llu inputCount=%08X zero/positive=%llu/%llu qualifying=%llu record=%08X aux=%08X",
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_GATE_5D2AD6].hits),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_GATE_5D2AD6].taken),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_GATE_5D2AD6].notTaken),
+        flow[NFS_GUEST_FLOW_GATE_5D2AD6].lastValue,flow[NFS_GUEST_FLOW_GATE_5D2AD6].lastAuxiliary,
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_GATE_5D2B1D].hits),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_GATE_5D2B1D].taken),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_GATE_5D2B1D].notTaken),
+        flow[NFS_GUEST_FLOW_GATE_5D2B1D].lastValue,flow[NFS_GUEST_FLOW_GATE_5D2B1D].lastAuxiliary,
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_CAA20_ENTRY].hits),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_630DE0_ENTRY].hits),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_316D0_ENTRY].hits),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_162E0_ENTRY].hits),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_20AE0_ENTRY].hits),
+        flow[NFS_GUEST_FLOW_CAA20_870CD4].lastValue,
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_CAA20_870CD4].taken),
+        flow[NFS_GUEST_FLOW_630DE0_8654A4].lastValue,
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_630DE0_8654A4].taken),
+        flow[NFS_GUEST_FLOW_630DE0_8026C8].lastValue,
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_630DE0_8026C8].taken),
+        flow[NFS_GUEST_FLOW_630DE0_INPUT_COUNT].lastValue,
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_630DE0_INPUT_COUNT].taken),
+        flow[NFS_GUEST_FLOW_630DE0_INPUT_OBJECT].lastValue,
+        flow[NFS_GUEST_FLOW_316D0_8026C8].lastValue,
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_316D0_8026C8].taken),
+        flow[NFS_GUEST_FLOW_316D0_890080].lastValue,
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_316D0_890080].taken),
+        flow[NFS_GUEST_FLOW_316D0_INPUT_OBJECT].lastValue,
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_Q0_SITE_6173D1].hits),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_Q0_SITE_621D96].hits),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_Q0_SITE_621E79].hits),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_Q0_SITE_6220B5].hits),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_Q0_SITE_622EB2].hits),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_C5880_ENTRY].hits),
+        flow[NFS_GUEST_FLOW_C5880_INPUT_COUNT].lastValue,
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_C5880_INPUT_COUNT].taken),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_C5880_INPUT_COUNT].notTaken),
+        static_cast<unsigned long long>(flow[NFS_GUEST_FLOW_C5880_QUALIFYING_RECORD].hits),
+        flow[NFS_GUEST_FLOW_C5880_QUALIFYING_RECORD].lastValue,
+        flow[NFS_GUEST_FLOW_C5880_QUALIFYING_RECORD].lastAuxiliary);
+    char text[6144];
+    std::snprintf(text,sizeof(text),"D3D9 Create: %llu calls, %llu ok, %s\nD3D9 Present: %llu calls, %s\nVK acquire: %llu, %s\nVK queuePresent: %llu, %s\nSurface: %ux%u\n%s\n%s\n%s\n%s\n%s",
+        static_cast<unsigned long long>(createAttempts),static_cast<unsigned long long>(createSuccesses),createStatus,
+        static_cast<unsigned long long>(d3dPresents),d3dStatus,
+        static_cast<unsigned long long>(vkAcquires),acquireStatus,
+        static_cast<unsigned long long>(vkPresents),vkPresentStatus,width,height,probeText,renderText,flowText,audioText,audioGapText);
+    return env->NewStringUTF(text);
+}
 extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativePointer(JNIEnv*,jclass,jfloat x,jfloat y,jint phase){
     setGuestPointer(x,y,phase);
 }
@@ -373,6 +573,20 @@ extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativePoint
 }
 extern "C" JNIEXPORT void JNICALL Java_com_nfsu2_androidevolved_GameActivity_nativePointerMiddle(JNIEnv* env,jclass clazz,jfloat x,jfloat y,jint phase,jfloat dx,jfloat dy){
     Java_io_mininxd_nfsu2_GameActivity_nativePointerMiddle(env,clazz,x,y,phase,dx,dy);
+}
+static void touchCameraStick(float x,float y){
+    static void (*s_stick_cam)(float,float)=nullptr;
+    if(!s_stick_cam){
+        void* h=dlopen("libgame_core.so",RTLD_NOLOAD);
+        if(!h)h=dlopen("libgame_core.so",RTLD_NOW|RTLD_GLOBAL);
+        if(!h)h=dlopen("libgraphics_cache.so",RTLD_NOW|RTLD_GLOBAL);
+        if(h)s_stick_cam=reinterpret_cast<void(*)(float,float)>(dlsym(h,"nfs_camera_stick_input"));
+        if(!s_stick_cam)s_stick_cam=reinterpret_cast<void(*)(float,float)>(dlsym(RTLD_DEFAULT,"nfs_camera_stick_input"));
+    }
+    if(s_stick_cam)s_stick_cam(x,y);
+}
+extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeTouchCamera(JNIEnv*,jclass,jfloat x,jfloat y){
+    touchCameraStick(x,y);
 }
 extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeTypeText(JNIEnv* env,jclass,jstring value,jboolean replace){
     if(!value)return;
@@ -456,7 +670,6 @@ extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeCpuTe
 // drives the GPU through two Vulkan drivers.
 static bool customVulkanDriver=false;
 static std::string customVulkanError;
-static uint32_t s_vulkanApiVersion = VK_API_VERSION_1_3;
 static std::string s_vulkanDriverDesc;
 extern "C" void dxvkAndroidSetInstanceProcAddr(PFN_vkGetInstanceProcAddr entry);
 extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeGpuDriver(JNIEnv* env,jclass,jstring hooks,jstring temp,jstring directory,jstring library){
@@ -488,6 +701,30 @@ extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeSetAu
 }
 extern "C" JNIEXPORT void JNICALL Java_io_mininxd_nfsu2_GameActivity_nativeRequestAudioRestart(JNIEnv*,jclass){
     requestGuestAudioRestart();
+}
+extern "C" JNIEXPORT void JNICALL Java_com_nfsu2_androidevolved_GameActivity_nativeKey(JNIEnv* env,jclass cls,jint scan,jboolean down){
+    Java_io_mininxd_nfsu2_GameActivity_nativeKey(env,cls,scan,down);
+}
+extern "C" JNIEXPORT jboolean JNICALL Java_com_nfsu2_androidevolved_GameActivity_nativeDrivingControls(JNIEnv* env,jclass cls){
+    return Java_io_mininxd_nfsu2_GameActivity_nativeDrivingControls(env,cls);
+}
+extern "C" JNIEXPORT jboolean JNICALL Java_com_nfsu2_androidevolved_GameActivity_nativeGamepadUsed(JNIEnv* env,jclass cls){
+    return Java_io_mininxd_nfsu2_GameActivity_nativeGamepadUsed(env,cls);
+}
+extern "C" JNIEXPORT void JNICALL Java_com_nfsu2_androidevolved_GameActivity_nativeTypeText(JNIEnv* env,jclass cls,jstring value,jboolean replace){
+    Java_io_mininxd_nfsu2_GameActivity_nativeTypeText(env,cls,value,replace);
+}
+extern "C" JNIEXPORT void JNICALL Java_com_nfsu2_androidevolved_GameActivity_nativePointer(JNIEnv* env,jclass cls,jfloat x,jfloat y,jint phase){
+    Java_io_mininxd_nfsu2_GameActivity_nativePointer(env,cls,x,y,phase);
+}
+extern "C" JNIEXPORT void JNICALL Java_com_nfsu2_androidevolved_GameActivity_nativeResolution(JNIEnv* env,jclass cls,jint width,jint height){
+    Java_io_mininxd_nfsu2_GameActivity_nativeResolution(env,cls,width,height);
+}
+extern "C" JNIEXPORT void JNICALL Java_com_nfsu2_androidevolved_GameActivity_nativeBackBuffers(JNIEnv* env,jclass cls,jint count){
+    Java_io_mininxd_nfsu2_GameActivity_nativeBackBuffers(env,cls,count);
+}
+extern "C" JNIEXPORT void JNICALL Java_com_nfsu2_androidevolved_GameActivity_nativeCpuTextures(JNIEnv* env,jclass cls,jboolean enabled){
+    Java_io_mininxd_nfsu2_GameActivity_nativeCpuTextures(env,cls,enabled);
 }
 static void configurePipelineCache(android_app* app){
     const char* files=app->activity->internalDataPath;
@@ -546,12 +783,7 @@ void android_main(android_app* app) {
             auto status=host.guestWorker.status();
             if(status!=host.guestStatus){
                 host.guestStatus=status;
-                const char* rend = getenv("NFSU2_RENDERER");
-                bool isGl = rend && (strcmp(rend, "opengl") == 0 || strcmp(rend, "opengl_es") == 0);
-                unsigned major = VK_API_VERSION_MAJOR(s_vulkanApiVersion);
-                unsigned minor = VK_API_VERSION_MINOR(s_vulkanApiVersion);
-                if (major < 1 || (major == 1 && minor < 3)) { major = 1; minor = 3; }
-                std::string apiBanner = isGl ? "OpenGL ES: presentation active\n" : ("Vulkan " + std::to_string(major) + "." + std::to_string(minor) + ": presentation active\n");
+                std::string apiBanner = "Guest boot in progress; first rendered frame not confirmed\n";
                 showStatus(app,("Accessible data: " + getGameRoot() + "\n" + apiBanner + status).c_str());
             }
             if (host.renderer.device&&!host.renderer.draw()) host.renderer.stop();
