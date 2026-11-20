@@ -2,7 +2,7 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ main, rustcode ]
+    branches: [ main, rustcode, nfsu2-beta24-diagnostic-trace ]
     tags: [ 'v*' ]
   pull_request:
     branches: [ main, rustcode ]
